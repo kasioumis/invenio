@@ -712,6 +712,13 @@ AC_CONFIG_FILES([config.nice  \
      modules/bibindex/lib/tokenizers/Makefile \
      modules/bibindex/web/Makefile \
      modules/bibindex/web/admin/Makefile \
+     modules/bibingest/Makefile \
+     modules/bibingest/doc/Makefile \
+     modules/bibingest/doc/admin/Makefile \
+     modules/bibingest/doc/hacking/Makefile \
+     modules/bibingest/lib/Makefile \
+     modules/bibingest/lib/storage_engines/Makefile \
+     modules/bibingest/lib/ingestion_packages/Makefile \
      modules/bibknowledge/Makefile \
      modules/bibknowledge/lib/Makefile \
      modules/bibknowledge/doc/Makefile \
