@@ -15,16 +15,16 @@
 # along with Invenio; if not, write to the Free Software Foundation, Inc.,
 # 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA.
 
+SUBDIRS = client_servers
+
 pylibdir = $(libdir)/python/invenio
 
 pylib_DATA = bibsword_config.py \
-             bibsword_client_dblayer.py \
-             bibsword_client_formatter.py \
-             bibsword_client_http.py \
              bibsword_client.py \
+             bibsword_client_dblayer.py \
+             bibsword_client_server.py \
              bibsword_client_templates.py \
-             bibsword_webinterface.py \
-             bibsword_client_tester.py
+             bibsword_webinterface.py
 
 EXTRA_DIST = $(pylib_DATA)
 

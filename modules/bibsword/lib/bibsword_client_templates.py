@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-
+#
 # This file is part of Invenio.
-# Copyright (C) 2010, 2011 CERN.
+# Copyright (C) 2010, 2011, 2012, 2013, 2014, 2015, 2016 CERN.
 #
 # Invenio is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License as
@@ -17,1090 +17,2029 @@
 # along with Invenio; if not, write to the Free Software Foundation, Inc.,
 # 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA.
 
-'''
-BibSWORD Client Templates
-'''
+"""
+BibSWORD Client Templates.
+"""
 
-from invenio.config import CFG_SITE_URL, CFG_SITE_NAME, CFG_SITE_RECORD
+from cgi import escape
+from datetime import datetime
+import re
+from invenio.config import(
+    CFG_SITE_RECORD,
+    CFG_SITE_URL
+)
+from invenio.messages import gettext_set_language
 
-class BibSwordTemplate:
-    '''
-        This class contains attributes and methods that allows to display all
-        information used by the BibSword web user interface. Theses informations
-        are form, validation or error messages
-    '''
 
-    def __init__(self):
-        ''' No init necessary for this class '''
+class TemplateSwordClient(object):
+    """
+    Templates for the Sword client.
+    """
 
-    #---------------------------------------------------------------------------
-    # BibSword WebSubmit Interface
-    #---------------------------------------------------------------------------
+    @staticmethod
+    def _tmpl_submission_table_row(
+        submission,
+        ln
+    ):
+        """
+        Returns the HTML code for a server table row.
+        """
+        (user,
+         record_id,
+         server_id,
+         server_name,
+         submitted,
+         status,
+         last_updated,
+         status_url
+         ) = submission
 
-    def tmpl_display_submit_ack(self, remote_id, link):
-        '''
-            This method generate the html code that displays the acknoledgement
-            message after the submission of a record.
-            @param remote_id: id of the record given by arXiv
-            @param link: links to modify or consult submission
-            @return: string containing the html code
-        '''
+        table_row = """
+                    <tr id="submission_id_{0}_{1}">
+        """.format(record_id, server_id)
 
-        html = ''
+        table_row += """
+                        <td class="sword_client_submission_user">
+                            {0}
+                        </td>
+        """.format(user)
 
-        html += '''<h1>Success !</h1>'''
-        html += '''<p>The record has been successfully pushed to arXiv ! <br />''' \
-                '''You will get an email once it will be accepted by ''' \
-                '''arXiv moderator.</p>'''
-        html += '''<p>The arXiv id of the submission is: <b>%s</b></p>''' % \
-            remote_id
-        html += '''<p><a href="www.arxiv.org/user">Manage your submission</a></p>'''
+        table_row += """
+                        <td class="sword_client_submission_record">
+                            <a href="{0}/{1}/{2}">#{2}</a>
+                        </td>
+        """.format(CFG_SITE_URL, CFG_SITE_RECORD, record_id)
+
+        table_row += """
+                        <td class="sword_client_submission_server">
+                            {0}
+                        </td>
+        """.format(server_name)
+
+        table_row += """
+                        <td class="sword_client_submission_submitted">
+                            {0}
+                        </td>
+        """.format(
+            TemplateSwordClient._humanize_datetime(
+                submitted,
+                ln
+            )
+        )
+
+        table_row += """
+                        <td class="sword_client_submission_status">
+                            {0}
+                        </td>
+        """.format(status)
+
+        table_row += """
+                        <td class="sword_client_submission_last_updated">
+                            {0}
+                        </td>
+        """.format(
+            TemplateSwordClient._humanize_datetime(
+                last_updated,
+                ln
+            )
+        )
+
+        # ↺ --> &#8634;
+        html_options = """
+                            <a class="bibsword_anchor font_size_150percent" data-option="update" data-action="submit" data-server_id="{0}" data-status_url="{1}" data-ln="{2}" href="javascript:void(0)">&#8634;</a>
+        """
+
+        table_row += """
+                        <td class="sword_client_submission_option text_align_center">
+                            {0}
+                        </td>
+        """.format(html_options.format(server_id, status_url, ln))
+
+        table_row += """
+                    </tr>
+        """
+
+        return table_row
+
+    def tmpl_submissions(
+        self,
+        submissions,
+        ln
+    ):
+        """
+        Returns the submissions table with all information and options.
+        """
+
+        _ = gettext_set_language(ln)
+
+        html = """
+            <script>
+
+            $(document).ready(function(){{
+
+                $("table.bibsword_table td.sword_client_submission_option").on("click", "a:not('.temporarily_disabled')", function(){{
+
+                    var sword_client_submission_option_element = $(this);
+                    var sword_client_submission_option_data = sword_client_submission_option_element.data();
+                    var sword_client_submission_option_data_option = sword_client_submission_option_data["option"];
+
+                    $.ajax({{
+
+                        url: "/sword_client/submission_options",
+
+                        data: sword_client_submission_option_data,
+
+                        beforeSend: function(){{
+                            if ( sword_client_submission_option_data_option == "update" ) {{
+                                sword_client_submission_option_element.parent().children("a:not('.temporarily_disabled')").addClass("temporarily_disabled");
+                            }}
+                        }},
+
+                        success: function(data){{
+
+                            if ( sword_client_submission_option_data_option == "update" ) {{
+                                data = JSON.parse(data);
+                                sword_client_submission_option_element.parent().siblings("td.sword_client_submission_status").html(data["status"]);
+                                sword_client_submission_option_element.parent().siblings("td.sword_client_submission_last_updated").html(data["last_updated"]);
+                            }}
+
+                        }},
+
+                        error: function(jqXHR) {{
+                            alert("{error_message}");
+                        }},
+
+                        complete: function(){{
+                            if ( sword_client_submission_option_data_option == "update" ) {{
+                                sword_client_submission_option_element.parent().children("a.temporarily_disabled").removeClass("temporarily_disabled");
+                            }}
+                        }},
+
+                    }});
+
+                }});
+
+            }});
+
+            </script>
+
+            <table class="bibsword_table">
+                <thead>
+                    <tr>
+                        <th>
+                            {user_header_label}
+                        </th>
+                        <th>
+                            {record_header_label}
+                        </th>
+                        <th>
+                            {server_header_label}
+                        </th>
+                        <th>
+                            {submitted_header_label}
+                        </th>
+                        <th>
+                            {status_header_label}
+                        </th>
+                        <th>
+                            {updated_header_label}
+                        </th>
+                        <th>
+                            {options_header_label}
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {tbody}
+                </tbody>
+                <tfoot>
+                </tfoot>
+            </table>
+        """
+
+        html_tbody = ""
+
+        for submission in submissions:
+            html_tbody += TemplateSwordClient._tmpl_submission_table_row(
+                submission,
+                ln
+            )
+
+        return html.format(
+            error_message=_("An error has occured. " +
+                            "The administrators have been informed."),
+            user_header_label=_("User"),
+            record_header_label=_("Record"),
+            server_header_label=_("Server"),
+            submitted_header_label=_("Submitted"),
+            status_header_label=_("Status"),
+            updated_header_label=_("Last updated"),
+            options_header_label=_("Options"),
+            tbody=html_tbody
+        )
+
+    @staticmethod
+    def _tmpl_server_table_row(
+        server,
+        ln
+    ):
+        """
+        Returns the HTML code for a server table row.
+        """
+        (server_id,
+         name,
+         engine,
+         username,
+         dummy,
+         email,
+         dummy,
+         update_frequency,
+         last_updated) = server
+
+        table_row = """
+                    <tr id="server_id_{0}">
+        """.format(server_id)
+
+        table_row += """
+                        <td class="sword_client_server_name">
+                            {0}
+                        </td>
+        """.format(name)
+
+        table_row += """
+                        <td class="sword_client_server_engine">
+                            {0}
+                        </td>
+        """.format(engine)
+
+        table_row += """
+                        <td class="sword_client_server_username">
+                            {0}
+                        </td>
+        """.format(username)
+
+        table_row += """
+                        <td class="sword_client_server_email">
+                            {0}
+                        </td>
+        """.format(email)
+
+        table_row += """
+                        <td class="sword_client_server_update_frequency">
+                            {0}
+                        </td>
+        """.format(
+            TemplateSwordClient._humanize_frequency(
+                update_frequency,
+                ln
+            )
+        )
+
+        table_row += """
+                        <td class="sword_client_server_last_updated">
+                            {0}
+                        </td>
+        """.format(
+            TemplateSwordClient._humanize_datetime(
+                last_updated,
+                ln
+            )
+        )
+
+        # ↺ --> &#8634;
+        # ✎ --> &#9998;
+        # ✗ --> &#10007;
+        html_options = """
+                            <a class="bibsword_anchor font_size_150percent" data-option="update" data-action="submit" data-server_id="{0}" data-ln="{1}" href="javascript:void(0)">&#8634;</a>
+                            &nbsp;
+                            <a class="bibsword_anchor font_size_150percent" data-option="modify" data-action="prepare" data-server_id="{0}" data-ln="{1}" href="javascript:void(0)">&#9998;</a>
+                            &nbsp;
+                            <a class="bibsword_anchor font_size_150percent" data-option="delete" data-action="submit" data-server_id="{0}" data-ln="{1}" href="javascript:void(0)">&#10007;</a>
+        """
+
+        table_row += """
+                        <td class="sword_client_server_option">
+                            {0}
+                        </td>
+        """.format(html_options.format(server_id, ln))
+
+        table_row += """
+                    </tr>
+        """
+
+        return table_row
+
+    def tmpl_servers(
+        self,
+        servers,
+        ln
+    ):
+        """
+        Returns the servers table with all information and available options.
+        """
+
+        _ = gettext_set_language(ln)
+
+        # ⊕ --> &oplus;
+        html = """
+            <script>
+
+            $(document).ready(function(){{
+
+                $(".bibsword_table, .sword_client_server_add").on("click", "a:not('.temporarily_disabled')", function(){{
+
+                    var sword_client_server_option_element = $(this);
+                    var sword_client_server_option_data = sword_client_server_option_element.data();
+                    var sword_client_server_option_data_option = sword_client_server_option_data["option"];
+
+                    if ( sword_client_server_option_data_option == "delete" ) {{
+                        if ( confirm("{confirm_delete_label}") == false) {{
+                            return;
+                        }}
+                    }}
+
+                    $.ajax({{
+
+                        url: "/sword_client/server_options",
+
+                        data: sword_client_server_option_data,
+
+                        beforeSend: function(){{
+                            if ( sword_client_server_option_data_option == "delete" || sword_client_server_option_data_option == "update" ) {{
+                                sword_client_server_option_element.parent().children("a:not('.temporarily_disabled')").addClass("temporarily_disabled");
+                            }}
+                        }},
+
+                        success: function(data){{
+
+                            if ( sword_client_server_option_data_option == "add" || sword_client_server_option_data_option == "modify" ) {{
+                                $("body").append(data);
+                            }}
+
+                            if ( sword_client_server_option_data_option == "delete" ) {{
+                                sword_client_server_option_element.parent().parent().hide(300).remove();
+                            }}
+
+                            if ( sword_client_server_option_data_option == "update" ) {{
+                                sword_client_server_option_element.parent().siblings("td.sword_client_server_last_updated").text(data);
+                            }}
+
+                        }},
+
+                        error: function(jqXHR) {{
+                            alert("{error_message}");
+                        }},
+
+                        complete: function(){{
+                            if ( sword_client_server_option_data_option == "delete" || sword_client_server_option_data_option == "update" ) {{
+                                sword_client_server_option_element.parent().children("a.temporarily_disabled").removeClass("temporarily_disabled");
+                            }}
+                        }},
+
+                    }});
+
+                }});
+
+            }});
+
+            </script>
+
+            <div class="margin_10px sword_client_server_add">
+                <a class="bibsword_anchor" data-option="add" data-action="prepare" data-ln="{ln}" href="javascript:void(0)">
+                    <span class="font_size_150percent">&oplus;</span>&nbsp;{add_label}
+                </a>
+            </div>
+
+            <table class="bibsword_table">
+                <thead>
+                    <tr>
+                        <th>
+                            {name_header_label}
+                        </th>
+                        <th>
+                            {engine_header_label}
+                        </th>
+                        <th>
+                            {username_header_label}
+                        </th>
+                        <th>
+                            {email_header_label}
+                        </th>
+                        <th>
+                            {frequency_header_label}
+                        </th>
+                        <th>
+                            {last_updated_header_label}
+                        </th>
+                        <th>
+                            {options_header_label}
+                        </th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {tbody}
+                </tbody>
+                <tfoot>
+                </tfoot>
+            </table>
+        """
+
+        html_tbody = ""
+
+        for server in servers:
+            html_tbody += TemplateSwordClient._tmpl_server_table_row(
+                server,
+                ln
+            )
+
+        return html.format(
+            confirm_delete_label=_(
+                "Are you sure you want to delete this server?"
+            ),
+            add_label=_("Add server"),
+            error_message=_("An error has occured. " +
+                            "The administrators have been informed."),
+            name_header_label=_("Name"),
+            engine_header_label=_("Engine"),
+            username_header_label=_("Username"),
+            email_header_label=_("E-mail"),
+            frequency_header_label=_("Update frequency"),
+            last_updated_header_label=_("Last updated"),
+            options_header_label=_("Options"),
+            tbody=html_tbody,
+            ln=ln
+        )
+
+    def tmpl_add_or_modify_server(
+        self,
+        server,
+        available_engines,
+        ln
+    ):
+        """
+        Returns the servers table with all information and available options.
+        """
+
+        _ = gettext_set_language(ln)
+
+        if server:
+            (server_id,
+             name,
+             engine,
+             username,
+             password,
+             email,
+             dummy,
+             update_frequency,
+             dummy) = server
+            label = _("Modify server")
+            content = """
+                <input type="hidden" name="option" value="modify">
+                <input type="hidden" name="action" value="submit">
+                <input type="hidden" name="server_id" value="{0!s}">
+            """.format(server_id)
+            controls = ""
+        else:
+            (server_id,
+             name,
+             engine,
+             username,
+             password,
+             email,
+             dummy,
+             update_frequency,
+             dummy) = ("",)*9
+            label = _("Add server")
+            content = """
+                <input type="hidden" name="option" value="add">
+                <input type="hidden" name="action" value="submit">
+            """
+            controls = ""
+
+        html_input = """
+            <div>
+                <div>
+                    <label class="bibsword_modal_content_field_title">
+                        {title}:
+                    </label>
+                    <br />
+                    <div class="bibsword_modal_content_field_subtitle">
+                        {subtitle}
+                    </div>
+                </div>
+                <div class="display_inline">
+                    <input type="{input_type}" name="{name}" value="{value}" size="{size}" placeholder="{placeholder}" />
+                </div>
+            </div>
+        """
+
+        html_select_option = """
+                        <option value="{value}"{selected}>{label}</option>
+        """
+
+        html_select = """
+            <div>
+                <div>
+                    <label class="bibsword_modal_content_field_title">
+                        {title}:
+                    </label>
+                    <br />
+                    <div class="bibsword_modal_content_field_subtitle">
+                        {subtitle}
+                    </div>
+                </div>
+                <div class="display_inline">
+                    <select name={name}>
+                        {options}
+                    </select>
+                </div>
+            </div>
+        """
+
+        content += html_input.format(
+            title=_("Server name"),
+            subtitle=_("A custom name for the server that you can then choose to submit to."),
+            input_type="text",
+            name="sword_client_server_name",
+            value=escape(name, True),
+            size="50%",
+            placeholder="example.com SWORD server"
+        )
+
+        content += html_select.format(
+            title=_("Server engine"),
+            subtitle=_("The server engine to connect to."),
+            name="sword_client_server_engine",
+            options="".join(
+                [html_select_option.format(
+                    value=escape(available_engine, True),
+                    selected=" selected" if available_engine == engine else "",
+                    label=escape(available_engine, True)
+                ) for available_engine in available_engines]
+            )
+        )
+
+        content += html_input.format(
+            title=_("Username"),
+            subtitle=_("The username used to connect to the server."),
+            input_type="text",
+            name="sword_client_server_username",
+            value=escape(username, True),
+            size="50%",
+            placeholder="johndoe"
+        )
+
+        content += html_input.format(
+            title=_("Password"),
+            subtitle=_("The password used to connect to the server."),
+            input_type="password",
+            name="sword_client_server_password",
+            value=password,
+            size="50%",
+            placeholder="pa55w0rd"
+        )
+
+        content += html_input.format(
+            title=_("E-mail"),
+            subtitle=_("The e-mail of the user that connects to the server."),
+            input_type="text",
+            name="sword_client_server_email",
+            value=escape(email, True),
+            size="50%",
+            placeholder="johndoe@example.com"
+        )
+
+        content += html_input.format(
+            title=_("Update frequency"),
+            subtitle=_("How often should the server be checked for updates?" +
+                       " The update frequency must be expressed in units of" +
+                       " weeks (w), days (d), hours(h), minutes (m) and" +
+                       " seconds (s) as a single string with no spaces." +
+                       " For example, \"1w3d\" means \"Every 1 week and 3" +
+                       " days\" and \"6h30m10s\" means \"Every 6 hours," +
+                       " 30 minutes and 10 seconds\"."),
+            input_type="text",
+            name="sword_client_server_update_frequency",
+            value=escape(update_frequency, True),
+            size="50%",
+            placeholder="1w3d"
+        )
+
+        controls += """
+            <button class="sword_client_server_control" name="cancel" type="button">{label}</button>
+        """.format(
+            label=_("Cancel")
+        )
+
+        controls += """
+            &nbsp;
+        """
+
+        controls += """
+            <button class="sword_client_server_control" name="submit" type="button">{label}</button>
+        """.format(
+            label=_("Submit")
+        )
+
+        html = """
+            <script>
+
+            $(document).ready(function(){{
+
+                $("button.sword_client_server_control[name='cancel']").on("click", function(){{
+
+                    var sword_client_server_option_element = $(this);
+                    if ( sword_client_server_option_element.hasClass("temporarily_disabled") ) {{
+                        return;
+                    }}
+                    sword_client_server_option_element.parents("div.bibsword_modal_outer").remove();
+
+                }});
+
+                $("button.sword_client_server_control[name='submit']").on("click", function(){{
+
+                    var sword_client_server_option_element = $(this);
+                    if ( sword_client_server_option_element.hasClass("temporarily_disabled") ) {{
+                        return;
+                    }}
+                    var sword_client_server_option_data_element = $("form[name='sword_client_server_form']");
+                    var sword_client_server_option_data = sword_client_server_option_data_element.serialize();
+                    var sword_client_server_option_data_option = sword_client_server_option_data_element.children("input[name='option']").val();
+                    var sword_client_server_option_data_server_id = sword_client_server_option_data_element.children("input[name='server_id']").val();
+
+                    $.ajax({{
+
+                        url: "/sword_client/server_options",
+
+                        data: sword_client_server_option_data,
+
+                        beforeSend: function(){{
+                            sword_client_server_option_element.parent().children("button:not('.temporarily_disabled')").addClass("temporarily_disabled");
+                        }},
+
+                        success: function(data){{
+
+                            if ( sword_client_server_option_data_option == "add" ) {{
+                                $(data).hide().appendTo("table.bibsword_table tbody").fadeIn(300);
+                            }}
+
+                            if ( sword_client_server_option_data_option == "modify" ) {{
+                                var sword_client_server = $("#server_id_" + sword_client_server_option_data_server_id);
+                                data = JSON.parse(data);
+                                sword_client_server.children("td.sword_client_server_name").text(data["name"]);
+                                sword_client_server.children("td.sword_client_server_engine").text(data["engine"]);
+                                sword_client_server.children("td.sword_client_server_username").text(data["username"]);
+                                sword_client_server.children("td.sword_client_server_email").text(data["email"]);
+                                sword_client_server.children("td.sword_client_server_update_frequency").text(data["update_frequency"]);
+                            }}
+
+                        }},
+
+                        error: function(jqXHR) {{
+                            alert("{error_message}");
+                        }},
+
+                        complete: function(){{
+                            sword_client_server_option_element.parent().children("button.temporarily_disabled").removeClass("temporarily_disabled");
+                            sword_client_server_option_element.parents("div.bibsword_modal_outer").remove();
+                        }},
+
+                    }});
+
+                }});
+
+            }});
+
+            </script>
+
+            <div class="bibsword_modal_outer">
+                <div class="bibsword_modal_inner">
+                    <div class="bibsword_modal_label">
+                        {label}
+                    </div>
+                    <div class="bibsword_modal_content">
+                        <form name="sword_client_server_form">
+                            {content}
+                        <form>
+                    </div>
+                    <div class="bibsword_modal_controls">
+                        {controls}
+                    </div>
+                </div>
+            </div>
+        """.format(
+            label=label,
+            content=content,
+            controls=controls,
+            error_message=_("An error has occured. " +
+                            "The administrators have been informed.")
+        )
 
         return html
 
-    #---------------------------------------------------------------------------
-    # BibSword Administrator Interface
-    #---------------------------------------------------------------------------
-
-    def tmpl_display_admin_page(self, submissions, first_row, last_row,
-                                total_rows, is_prev, is_last, offset,
-                                error_messages=None):
-        '''
-            format the html code that display the submission table
-            @param submissions: list of all submissions and their status
-            @return: html code to be displayed
-        '''
-
-        if error_messages == None:
-            error_messages = []
-
-        body = '''
-<form method="post" enctype="multipart/form-data" accept-charset="UTF-8" action="/bibsword">
-    %(error_message)s
-
-    <input type="hidden" name="status" value="display_submission"/>
-    <input type="hidden" name="first_row" value="%(first_row)s"/>
-    <input type="hidden" name="last_row" value="%(last_row)s"/>
-    <input type="hidden" name="total_rows" value="%(total_rows)s" />
-
-    <input type="submit" name="submit" value="New submission"/><br/>
-    <br />
-    <input type="submit" name="submit" value="Refresh all"/><br/>
-    <br />
-    Display
-    <select name="offset">
-        <option value="5" %(selected_1)s>5</option>
-        <option value="10" %(selected_2)s>10</option>
-        <option value="25" %(selected_3)s>25</option>
-        <option value="50" %(selected_4)s>50</option>
-        <option value=%(total_rows)s %(selected_5)s>all</option>
-    </select>
-    rows per page <input type="submit" name="submit" value="Select" /><br />
-    <br />
-    <input type="submit" name="submit" value="First" %(is_prev)s/>
-    <input type="submit" name="submit" value="Prev" %(is_prev)s/>
-    Pages %(first_row)s - %(last_row)s / %(total_rows)s
-    <input type="submit" name="submit" value="Next" %(is_last)s/>
-    <input type="submit" name="submit" value="Last" %(is_last)s/><br/>
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="7" bgcolor="#e6e6fa">
-                <h2>Submission state</h2>
-            </td>
-        </tr>
-        <tr>
-            <td align="center" bgcolor="#e6e6fa"><b>Remote server</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Submitter</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Record number</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Remote id</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Status</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Dates</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Links</b></td>
-        </tr>
-        %(submissions)s
-    </table>
-</form>''' % {
-                 'error_message': \
-                    self.display_error_message_row(error_messages),
-                 'table_width'  : '100%',
-                 'first_row'    : first_row,
-                 'last_row'     : last_row,
-                 'total_rows'   : total_rows,
-                 'is_prev'      : is_prev,
-                 'is_last'      : is_last,
-                 'selected_1'   : offset[0],
-                 'selected_2'   : offset[1],
-                 'selected_3'   : offset[2],
-                 'selected_4'   : offset[3],
-                 'selected_5'   : offset[4],
-                 'submissions'  : self.fill_submission_table(submissions)
-                 }
-
-        return body
-
-
-    def tmpl_display_remote_server_info(self, server_info):
-        '''
-            Display a table containing all server informations
-            @param server_info: tuple containing all server infos
-            @return: html code for the table containing infos
-        '''
-
-        body =   '''<table width="%(table_width)s">\n''' \
-                 '''    <tr>\n''' \
-                 '''        <td bgcolor="#e6e6fa">ID</td>\n''' \
-                 '''        <td>%(server_id)s</td>\n''' \
-                 '''    </tr>\n ''' \
-                 '''    <tr>\n''' \
-                 '''        <td bgcolor="#e6e6fa">Name</td>\n''' \
-                 '''        <td>%(server_name)s</td>\n''' \
-                 '''    </tr>\n ''' \
-                 '''    <tr>\n''' \
-                 '''        <td bgcolor="#e6e6fa">Host</td>\n''' \
-                 '''        <td>%(server_host)s</td>\n''' \
-                 '''    </tr>\n ''' \
-                 '''    <tr>\n''' \
-                 '''        <td bgcolor="#e6e6fa">Username</td>\n''' \
-                 '''        <td>%(username)s</td>\n''' \
-                 '''    </tr>\n ''' \
-                 '''    <tr>\n''' \
-                 '''        <td bgcolor="#e6e6fa">Password</td>\n''' \
-                 '''        <td>%(password)s</td>\n''' \
-                 '''    </tr>\n ''' \
-                 '''    <tr>\n''' \
-                 '''        <td bgcolor="#e6e6fa">Email</td>\n''' \
-                 '''        <td>%(email)s</td>\n''' \
-                 '''    </tr>\n ''' \
-                 '''    <tr>\n''' \
-                 '''        <td bgcolor="#e6e6fa">Realm</td>\n''' \
-                 '''        <td>%(realm)s</td>\n''' \
-                 '''    </tr>\n ''' \
-                 '''    <tr>\n''' \
-                 '''        <td bgcolor="#e6e6fa">Record URL</td>\n''' \
-                 '''        <td>%(url_base_record)s</td>\n''' \
-                 '''    </tr>\n ''' \
-                 '''    <tr>\n''' \
-                 '''        <td bgcolor="#e6e6fa">URL Servicedocument</td>\n'''\
-                 '''        <td>%(url_servicedocument)s</td>\n''' \
-                 '''    </tr>\n ''' \
-                 '''</table>''' % {
-                    'table_width'        : '50%',
-                    'server_id'          : server_info['server_id'],
-                    'server_name'        : server_info['server_name'],
-                    'server_host'        : server_info['server_host'],
-                    'username'           : server_info['username'],
-                    'password'           : server_info['password'],
-                    'email'              : server_info['email'],
-                    'realm'              : server_info['realm'],
-                    'url_base_record'    : server_info['url_base_record'],
-                    'url_servicedocument': server_info['url_servicedocument']
-                 }
-
-        return body
-
-
-    def tmpl_display_remote_servers(self, remote_servers, id_record,
-                                    error_messages):
-        '''
-            format the html code that display a dropdown list containing the
-            servers
-            @param self: reference to the current instance of the class
-            @param remote_servers: list of tuple containing server's infos
-            @return: string containing html code
-        '''
-
-        body = '''
-<form method="post" enctype="multipart/form-data" accept-charset="UTF-8" action="/bibsword">
-    <input type="hidden" name="status" value="select_server"/>
-    %(error_message)s
-
-    <input type="submit" name="submit" value="Cancel" />
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="2" bgcolor="#e6e6fa">
-                <h2>Forward a record</h2>
-            </td>
-        </tr>
-        <tr>
-            <td align="right" width="%(row_width)s">
-                <p>Enter the number of the report to submit: </p>
-            </td>
-            <td align="left" width="%(row_width)s">
-                <input type="text" name="id_record" size="20"
-                       value="%(id_record)s"/>
-            </td>
-        </tr>
-        <tr>
-            <td align="right" width="%(row_width)s">
-                <p>Select a remote server: </p>
-            </td>
-            <td align="left" width="%(row_width)s">
-                <select name="id_remote_server" size="1">
-                    <option value="0">-- select a remote server --</option>
-                    %(remote_server)s
-                </select>
-            </td>
-        </tr>
-        <tr>
-            <td colspan="2" align="center">
-                <input type="submit" value="Select" name="submit"/>
-            </td>
-        </tr>
-    </table>
-</form>''' % {
-                 'error_message': \
-                    self.display_error_message_row(error_messages),
-                 'table_width'   : '100%',
-                 'row_width'     : '50%',
-                 'id_record'     : id_record,
-                 'remote_server': \
-                    self.fill_dropdown_remote_servers(remote_servers)
-                 }
-
-        return body
-
-
-    def tmpl_display_collections(self, selected_server, server_infos,
-                                 collections, id_record, recid, error_messages):
-        '''
-            format the html code that display the selected server, the informations
-            about the selected server and a dropdown list containing the server's
-            collections
-            @param self: reference to the current instance of the class
-            @param selected_server: tuple containing selected server name and id
-            @param server_infos: tuple containing infos about selected server
-            @param collections: list contianing server's collections
-            @return: string containing html code
-        '''
-
-        body = '''
-<form method="post" enctype="multipart/form-data" accept-charset="UTF-8" action="/bibsword">
-    <input type="hidden" name="status" value="select_collection"/>
-    <input type="hidden" name="id_remote_server" value="%(id_server)s"/>
-    <input type="hidden" name="id_record" value="%(id_record)s"/>
-    <input type="hidden" name="recid" value="%(recid)s"/>
-
-    %(error_message)s
-
-    <input type="submit" name="submit" value="Cancel" />
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="2" bgcolor="#e6e6fa">
-            <h2>Remote server</h2></td>
-        </tr>
-        <tr>
-            <td align="center" rowspan="2" valign="center">
-                <h2>%(server_name)s</h2>
-            </td>
-            <td align="left">
-                SWORD version: %(server_version)s
-            </td>
-        </tr>
-        <tr>
-            <td align="left">
-                Max upload size [Kb]: %(server_maxUpload)s
-            </td>
-        </tr>
-        <tr>
-            <td align="left" colspan="2">
-                <input type="submit" value="Modify server" name="submit"/>
-            </td>
-        </tr>
-    </table>
-    <p> </p>
-
-
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="2" bgcolor="#e6e6fa"><h2>Collection</h2>
-        </td>
-        </tr>
-        <tr>
-            <td align="right" width="%(row_width)s">Select a collection: </td>
-            <td align="left" width="%(row_width)s">
-                <select name="id_collection" size="1">
-                    <option value="0">-- select a collection --</option>
-                    %(collection)s
-                </select>
-            </td>
-        </tr>
-        <tr>
-            <td align="center" colspan="2">
-                <input type="submit" value="Select" name="submit"/>
-            </td>
-        </tr>
-    </table>
-
-</form>''' % {
-                 'table_width'     : '100%',
-                 'row_width'       : '50%',
-                 'error_message'   : \
-                    self.display_error_message_row(error_messages),
-                 'id_server'       : selected_server['id'],
-                 'server_name'     : selected_server['name'],
-                 'server_version'  : server_infos['version'],
-                 'server_maxUpload': server_infos['maxUploadSize'],
-                 'collection'      : \
-                    self.fill_dropdown_collections(collections),
-                 'id_record'       : id_record,
-                 'recid'           : recid
-                 }
-
-        return body
-
-
-    def tmpl_display_categories(self, selected_server, server_infos,
-                                selected_collection, collection_infos,
-                                primary_categories, secondary_categories,
-                                id_record, recid, error_messages):
-        '''
-            format the html code that display the selected server, the informations
-            about the selected server, the selected collections, the informations
-            about the collection and a dropdown list containing the server's
-            primary and secondary categories
-            @param self: reference to the current instance of the class
-            @param selected_server: tuple containing selected server name and id
-            @param server_infos: tuple containing infos about selected server
-            @param selected_collection: selected collection
-            @param collection_infos: tuple containing infos about selected col
-            @param primary_categories: list of mandated categories for the col
-            @return: string containing html code
-        '''
-
-        body = '''
-<form method="post" enctype="multipart/form-data" accept-charset="UTF-8" action="/bibsword">
-    <input type="hidden" name="status" value="select_primary_category"/>
-    <input type="hidden" name="id_remote_server" value="%(id_server)s"/>
-    <input type="hidden" name="id_collection" value="%(id_collection)s"/>
-    <input type="hidden" name="id_record" value="%(id_record)s"/>
-    <input type="hidden" name="recid" value="%(recid)s"/>
-
-    %(error_message)s
-
-    <input type="submit" name="submit" value="Cancel" />
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="2" bgcolor="#e6e6fa">
-                <h2>Remote server</h2>
-            </td>
-        </tr>
-        <tr>
-            <td align="center" rowspan="2" valign="center">
-                <h2>%(server_name)s</h2>
-            </td>
-            <td align="left">
-                SWORD version: %(server_version)s
-            </td>
-        </tr>
-        <tr>
-            <td align="left">
-                Max upload size [Kb]: %(server_maxUpload)s
-            </td>
-        </tr>
-        <tr>
-            <td align="left" colspan="2">
-                <input type="submit" value="Modify server" name="submit"/>
-            </td>
-        </tr>
-    </table>
-    <p> </p>
-
-
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="2" bgcolor="#e6e6fa">
-                <h2>Collection</h2>
-            </td>
-        </tr>
-        <tr>
-            <td align="center" rowspan="2" valign="center">
-                <h2>%(collection_name)s</h2>
-            </td>
-            <td align="left">
-                URL: %(collection_url)s
-            </td>
-        </tr>
-        <tr>
-            <td align="left">
-                Accepted media types:
-                <ul>%(collection_accept)s</ul>
-            </td>
-        </tr>
-        <tr>
-            <td align="left" colspan=2>
-                <input type="submit" value="Modify collection" name="submit"/>
-            </td>
-        </tr>
-    </table>
-    <p> </p>
-
-
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="2" bgcolor="#e6e6fa">
-                <h2>Mandatory category</h2>
-            </td>
-        </tr>
-        <tr>
-            <td align="right" width="%(row_width)s">
-                <p>Select a mandated category: </p>
-            </td>
-            <td align="left" width="%(row_width)s">
-                <select name="id_primary" size="1">
-                    <option value="0">-- select a category --</option>
-                    %(primary_categories)s
-                </select>
-            </td>
-        </tr>
-    </table>
-    <p></p>
-
-
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="2" bgcolor="#e6e6fa">
-                <h2>Optional categories</h2>
-            </td>
-        </tr>
-            <td align="right" width="%(row_width)s">
-                <p>Select optional categories: </p>
-            </td>
-            <td align="left" width="%(row_width)s">
-                <select name="id_categories" size="10" multiple>
-                    %(secondary_categories)s
-                </select>
-            </td>
-        </tr>
-    </table>
-    <p> </p>
-
-    <center>
-        <input type="submit" value="Select" name="submit"/>
-    </center>
-
-</form>''' % {
-                 'table_width'           : '100%',
-                 'row_width'             : '50%',
-                 'error_message'        : self.display_error_message_row(
-                                                 error_messages),
-
-                 # hidden input
-                 'id_server'             : selected_server['id'],
-                 'id_collection'        : selected_collection['id'],
-                 'id_record'             : id_record,
-                 'recid'                   : recid,
-
-                 # variables values
-                 'server_name'           : selected_server['name'],
-                 'server_version'       : server_infos['version'],
-                 'server_maxUpload'    : server_infos['maxUploadSize'],
-
-                 'collection_name'     : selected_collection['label'],
-
-                 'collection_accept': ''.join([
-                '''<li>%(name)s </li>''' % {
-                        'name': accept
-                } for accept in collection_infos['accept'] ]),
-
-                 'collection_url'       : selected_collection['url'],
-                 'primary_categories' : self.fill_dropdown_primary(
-                                                 primary_categories),
-
-                 'secondary_categories': self.fill_dropdown_secondary(
-                                                 secondary_categories)
-                 }
-
-        return body
-
-
-    def tmpl_display_metadata(self, user, server, collection, primary,
-                              categories, medias, metadata, id_record, recid,
-                              error_messages):
-        '''
-            format a string containing every informations before a submission
-        '''
-
-
-        body = '''
-<form method="post" enctype="multipart/form-data" accept-charset="UTF-8" action="/bibsword">
-    <input type="hidden" name="status" value="check_submission"/>
-    <input type="hidden" name="id_remote_server" value="%(id_server)s"/>
-    <input type="hidden" name="id_collection" value="%(id_collection)s"/>
-    <input type="hidden" name="id_primary" value="%(id_primary)s"/>
-    <input type="hidden" name="id_categories" value="%(id_categories)s"/>
-    <input type="hidden" name="id_record" value="%(id_record)s"/>
-    <input type="hidden" name="recid" value="%(recid)s"/>
-
-    %(error_message)s
-
-    <input type="submit" name="submit" value="Cancel" />
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="2" bgcolor="#e6e6fa">
-                <h2>Destination</h2>
-            </td>
-        </tr>
-        <tr>
-            <td align="center" rowspan="3" valign="center">
-                <h2>%(server_name)s</h2>
-            </td>
-            <td align="left">
-                Collection: %(collection_name)s ( %(collection_url)s )
-            </td>
-        </tr>
-        <tr>
-            <td align="left">
-                Primary category: %(primary_name)s ( %(primary_url)s )
-            </td>
-        </tr>
-%(categories)s
-        <tr>
-            <td align="left" colspan="2">
-                <input type="submit" value="Modify destination" name="submit"/>
-            </td>
-        </tr>
-    </table>
-    <p> </p>
-
-
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="4" bgcolor="#e6e6fa">
-                <h2>Submitter</h2>
-            </td>
-        </tr>
-        <tr>
-            <td width="%(row_width)s">Name:</td>
-            <td><input type="text" name="author_name" size="100"
-                       value="%(user_name)s"/></td>
-        </tr>
-        <tr>
-            <td>Email:</td>
-            <td><input type="text" name="author_email" size="100"
-                       value="%(user_email)s"/></td>
-        </tr>
-    </table>
-    <p></p>
-
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="4" bgcolor="#e6e6fa"><h2>Media</h2></td>
-        </tr>
-        <tr><td colspan="4">%(medias)s%(media_help)s</td></tr>
-    </table>
-    <p></p>
-
-
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="3" bgcolor="#e6e6fa"><h2>Metadata</h2>   <font color="red"><b>Warning:</b> modification(s) will not be saved on the %(CFG_SITE_NAME)s</font>
-            </td>
-        </tr>
-        <tr>
-            <td align="left" width="%(row_width)s"><p>Report Number<span style="color:#f00">*</span>:</p></td>
-            <td><input type="text" name="id" size="100" value="%(id)s"/></td>
-        </tr>
-        <tr>
-            <td align="left" width="%(row_width)s"><p>Title<span style="color:#f00">*</span>:</p></td>
-            <td><input type="text" name="title" size="100" value="%(title)s"/>
-            </td>
-        </tr>
-        <tr>
-            <td align="left" width="%(row_width)s"><p>Summary<span style="color:#f00">*</span>:</p></td>
-            <td>
-                <textarea name="summary" rows="4" cols="100">%(summary)s
-                </textarea>
-            </td>
-        </tr>
-%(contributors)s
-%(journal_refs)s
-%(report_nos)s
-    </table>
-
-    <p><font color="red">The fields having a * are mandatory</font></p>
-
-    <center>
-        <input type="submit" value="Submit" name="submit"/>
-    </center>
-
-<form>''' % {
-                 'table_width'     : '100%',
-                 'row_width'       : '25%',
-                 'error_message'   : \
-                    self.display_error_message_row(error_messages),
-                 'CFG_SITE_NAME': CFG_SITE_NAME,
-
-                 # hidden input
-                 'id_server'         : server['id'],
-                 'id_collection'     : collection['id'],
-                 'id_primary'        : primary['id'],
-                 'id_categories'     : self.get_list_id_categories(categories),
-                 'id_record'         : id_record,
-                 'recid'             : recid,
-
-                 # variables values
-                 'server_name'          : server['name'],
-                 'collection_name'      : collection['label'],
-                 'collection_url'       : collection['url'],
-                 'primary_name'         : primary['label'],
-                 'primary_url'          : primary['url'],
-                 'categories'    : self.fill_optional_category_list(categories),
-
-                 #user
-                 'user_name'    : user['nickname'],
-                 'user_email'   : user['email'],
-
-                 # media
-                 'medias'     : self.fill_media_list(medias, server['id']),
-                 'media_help' : self.fill_arxiv_help_message(),
-
-                 # metadata
-                 'id'           : metadata['id'],
-                 'title'        : metadata['title'],
-                 'summary'      : metadata['summary'],
-                 'contributors' : self.fill_contributors_list(
-                                        metadata['contributors']),
-                 'journal_refs' : self.fill_journal_refs_list(
-                                        metadata['journal_refs']),
-                 'report_nos'   : self.fill_report_nos_list(
-                                        metadata['report_nos'])
-             }
-
-        return body
-
-
-    def tmpl_display_list_submission(self, submissions):
-        '''
-            Display the data of submitted recods
-        '''
-
-        body = '''
-<form method="post" enctype="multipart/form-data" accept-charset="UTF-8" action="/bibsword">
-    <table border="1" valign="top" width="%(table_width)s">
-        <tr>
-            <td align="left" colspan="7" bgcolor="#e6e6fa">
-                <h2>Document successfully submitted !</h2>
-            </td>
-        </tr>
-        <tr>
-            <td align="center" bgcolor="#e6e6fa"><b>Remote server</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Submitter</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Record id</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Remote id</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Status</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Dates</b></td>
-            <td align="center" bgcolor="#e6e6fa"><b>Links</b></td>
-        </tr>
-        %(submissions)s
-    </table>
-    <a href=%(CFG_SITE_URL)s/bibsword>Return</a>
-</form>''' % {
-                 'table_width'    : '100%',
-                 'submissions'    : self.fill_submission_table(submissions),
-                 'CFG_SITE_URL'   : CFG_SITE_URL
-                 }
-
-        return body
-
-
-    #***************************************************************************
-    # Private functions
-    #***************************************************************************
-
-
-    def display_error_message_row(self, error_messages):
-        '''
-            return a list of error_message in form of a bullet list
-            @param error_messages: list of error_messages to display
-            @return: html code that display list of errors
-        '''
-
-        # if no errors, return nothing
-        if len(error_messages) == 0:
-            return ''
-
-        if len(error_messages) == 1:
-            # display a generic header message
-            body = '''
-<tr>
-    <td align="left" colspan=2>
-        <font color='red'>
-        <p> The following error was found: </p>
-        <ul>
-'''
-
-        else:
-            # display a generic header message
-            body = '''
-<tr>
-    <td align="left" colspan=2>
-        <font color='red'>
-        <p> Following errors were found: </p>
-        <ul>
-'''
-
-        # insert each error lines
-        for error_message in error_messages:
-            body = body + '''
-        <li>%(error)s</li>''' % {
-            'error': error_message
+    @staticmethod
+    def _humanize_frequency(
+        raw_frequency,
+        ln
+    ):
+        """
+        Converts this: "3w4d5h6m7s"
+        to this: "Every 3 weeks, 4 days, 5 hours, 6 minutes, 7 seconds"
+        """
+
+        _ = gettext_set_language(ln)
+
+        frequency_translation = {
+            "w": _("week(s)"),
+            "d": _("day(s)"),
+            "h": _("hour(s)"),
+            "m": _("minute(s)"),
+            "s": _("second(s)"),
         }
 
-        body = body + '''
-        </ul>
-        </font>
-    </td>
-</tr>'''
+        humanized_frequency = _("Every")
+        humanized_frequency += " "
 
-        return body
+        frequency_parts = re.findall(
+            "([0-9]+)([wdhms]{1})",
+            raw_frequency
+        )
 
+        frequency_parts = map(
+            lambda p: "{0} {1}".format(p[0], frequency_translation[p[1]]),
+            frequency_parts
+        )
 
-    def fill_submission_table(self, submissions):
-        '''
-            This method return the body of the submission state table. each
-            submissions given in parameters has one row
-            @param submissions: submission status list
-            @return: html table body
-        '''
+        humanized_frequency += ", ".join(frequency_parts)
 
-        return ''.join([
-        '''  <tr>
-        <td>%(id_server)s: <a href="%(server_infos)s">
-            %(server_name)s</a></td>
-        <td>%(user_name)s <br/> %(user_email)s</td
-        <td>%(id_bibrec)s: <a href="%(cfg_site_url)s/%(CFG_SITE_RECORD)s/%(id_bibrec)s"
-            target="_blank">%(no_bibrec)s</a></td>
-        <td><a href="%(url_base_remote)s/%(id_remote)s" target="_blank">
-            %(id_remote)s</a></td>
-        <td>%(status)s</td>
-        <td><b>submission: </b> %(submission_date)s <br/>
-             <b>publication: </b> %(publication_date)s <br/>
-             <b>removal: </b> %(removal_date)s </td>
-        <td><b>media: </b> <a href="%(media_link)s" target="_blank">
-            %(media_link)s</a> <br/>
-             <b>metadata: </b> <a href="%(metadata_link)s" target="_blank">
-                %(metadata_link)s</a> <br />
-             <b>status: </b> <a href="%(status_link)s" target="_blank">
-                %(status_link)s</a></td>
-    </tr>''' % {
-            'id_server'            : str(submission['id_server']),
-            'server_infos'          : "%s/bibsword/remoteserverinfos?id=%s" % \
-                                     (CFG_SITE_URL, submission['id_server']),
-            'server_name'          : str(submission['server_name']),
-            'user_name'            : str(submission['user_name']),
-            'user_email'           : str(submission['user_email']),
-            'id_bibrec'            : str(submission['id_record']),
-            'no_bibrec'            : str(submission['report_no']),
-            'id_remote'            : str(submission['id_remote']),
-            'status'               : str(submission['status']),
-            'submission_date'      : str(submission['submission_date']),
-            'publication_date'     : str(submission['publication_date']),
-            'removal_date'         : str(submission['removal_date']),
-            'media_link'           : str(submission['link_medias']),
-            'metadata_link'        : str(submission['link_metadata']),
-            'status_link'          : str(submission['link_status']),
-            'url_base_remote'      : str(submission['url_base_remote']),
-            'cfg_site_url'         : CFG_SITE_URL,
-            'CFG_SITE_RECORD'       : CFG_SITE_RECORD
-        } for submission in submissions])
+        return humanized_frequency
 
+    @staticmethod
+    def _humanize_datetime(
+        raw_datetime,
+        ln
+    ):
+        """
+        Converts this: "2015-02-17 10:10:10"
+        to this: "2 week(s), 5 day(s) ago"
+        """
 
-    def fill_dropdown_remote_servers(self, remote_servers):
-        '''
-            This method fill a dropdown list of remote servers.
-            @return: html code to display
-        '''
+        _ = gettext_set_language(ln)
 
-        return ''.join([
-                '''<option value="%(id)s">%(name)s - %(host)s</option>''' % {
-                        'id': str(remote_server['id']),
-                        'name': remote_server['name'],
-                        'host': remote_server['host']
-                } for remote_server in remote_servers])
+        if not raw_datetime:
+            return _("Never")
 
+        passed_datetime = datetime.now() - raw_datetime
 
-    def fill_dropdown_collections(self, collections):
-        '''
-            This method fill a dropdown list of collection.
-            @param collections: list of all collections with name - url
-            @return: html code to display
-        '''
+        passed_datetime_days = passed_datetime.days
 
-        return ''.join([
-                '''<option value="%(id)s">%(name)s</option>''' % {
-                        'id': str(collection['id']),
-                        'name': collection['label']
-                } for collection in collections])
+        humanized_datetime_parts = []
 
-
-
-    def fill_dropdown_primary(self, primary_categories):
-        '''
-            This method fill the primary dropdown list with the data given in
-            parameter
-            @param primary_categories: list of 'url' 'name' tuples
-            @return: html code generated to display the list
-        '''
-        return ''.join([
-                '''<option value="%(id)s">%(name)s</option>'''  % {
-                        'id': primary_categorie['id'],
-                        'name': primary_categorie['label']
-                } for primary_categorie in primary_categories])
-
-
-    def fill_dropdown_secondary(self, categories):
-        '''
-            This method fill a category list. This list is allows the multi-selection
-            or items. To proced to select more than one categorie through a browser
-            ctrl + clic
-            @param categories: list of all categories in the format name - url
-            @return: the html code that display each dropdown list
-        '''
-
-        if len(categories) == '':
-            return ''
-
-        return ''.join([
-                '''<option value="%(id)s">%(name)s</option>''' % {
-                        'id': category['id'],
-                        'name': category['label']
-        } for category in categories])
-
-
-
-    def fill_optional_category_list(self, categories):
-        '''
-            This method fill a table row that contains name and url of the selected
-            optional categories
-            @param self: reference to the current instance of the class
-            @param categories: list of tuples containing selected categories
-            @return: html code generated to display the list
-        '''
-
-        if len(categories) == 0:
-            return ''
+        if passed_datetime_days:
+            passed_datetime_weeks = passed_datetime_days / 7
+            if passed_datetime_weeks:
+                humanized_datetime_parts.append(
+                    "{0!s} {1}".format(passed_datetime_weeks, _("week(s)"))
+                )
+            passed_datetime_days = passed_datetime_days % 7
+            humanized_datetime_parts.append(
+                "{0!s} {1}".format(passed_datetime_days, _("day(s)"))
+            )
 
         else:
-            body = '<tr><td>'
+            passed_datetime_seconds = passed_datetime.seconds
+            passed_datetime_minutes = passed_datetime_seconds / 60
+            passed_datetime_hours = passed_datetime_minutes / 60
+            if passed_datetime_hours:
+                humanized_datetime_parts.append(
+                    "{0!s} {1}".format(passed_datetime_hours, _("hour(s)"))
+                )
+            passed_datetime_minutes = passed_datetime_minutes % 60
+            if passed_datetime_minutes:
+                humanized_datetime_parts.append(
+                    "{0!s} {1}".format(passed_datetime_minutes, _("minute(s)"))
+                )
+            passed_datetime_seconds = passed_datetime_seconds % 60
+            if passed_datetime_seconds:
+                humanized_datetime_parts.append(
+                    "{0!s} {1}".format(passed_datetime_seconds, _("second(s)"))
+                )
 
-            body = body + ''.join([
-                '''<p>Category: %(category_name)s ( %(category_url)s )</p>'''%{
-                    'category_name' : category['label'],
-                    'category_url'  : category['url']
-                } for category in categories
-            ])
+        humanized_datetime = ", ".join(humanized_datetime_parts)
+        humanized_datetime += " "
+        humanized_datetime += _("ago")
 
-        body = body + '</td></tr>'
-        return body
+        return humanized_datetime
 
+    @staticmethod
+    def _submit_prepare_select_tag(
+        select_id,
+        select_name,
+        options,
+        default_option=None,
+        multiple=False
+    ):
+        """Prepare the HTML select tag."""
+        out = """
+        <select id="%s"%s%s>
+        """ % (
+            select_id,
+            select_name and ' name="%s"' % (select_name,) or '',
+            multiple and ' multiple="multiple"' or ''
+        )
 
-    def fill_media_list(self, medias, id_server, from_websubmit=False):
-        '''
-            Concatenate the string that contains all informations about the medias
-        '''
+        for option in options:
+            option_value = option[0]
+            option_text = option[1]
+            out += """
+            <option value="%s"%s>%s</option>
+            """ % (
+                escape(str(option_value), True),
+                default_option is not None and (
+                    option_value == default_option and " selected" or ""
+                ) or "",
+                escape(str(option_text), True)
+            )
 
-        text = ''
+        out += """
+        </select>
+        """
 
-        if id_server == 1:
+        return out
 
-            media_type = self.format_media_list_by_type(medias)
+    def tmpl_submit(
+        self,
+        sid,
+        recid,
+        title,
+        author,
+        report_number,
+        step,
+        servers,
+        server_id,
+        ln
+    ):
+        """
+        The main submission interface.
 
-            text = '''<h2>Please select files you would like to push to arXiv:</h2>'''
+        Through a series of steps, the user is guided through the submission.
+        """
 
-            for mtype in media_type:
-                text += '''<h3><b>%s: </b></h3>''' % mtype['media_type']
-                text += '''<blockquote>'''
-                for media in mtype['media_list']:
-                    text += '''<input type='checkbox' name="media" value="%s" %s>%s</input><br />''' % (media['path'], media['selected'], media['name'])
-                text += "</blockquote>"
+        _ = gettext_set_language(ln)
 
-            text += '''<h3>Upload</h3>'''
-            text += '''<blockquote>'''
-            text += '''<p>In addition, you can submit a new file (that will be added to the record as well):</p>'''
+        out = """
+<div class="bibsword_submit_container">
 
-            if from_websubmit == False:
-                text += '''<input type="file" name="new_media" size="60"/>'''
-        return text
+    <div class="bibsword_submit_header">
+    %(header)s
+    </div>
 
+    <div id="bibsword_submit_step_1_title" class="bibsword_submit_step_title">
+    %(step_1_title)s
+    </div>
 
-    def fill_arxiv_help_message(self):
-        text = '''</blockquote><h3>Help</h3>'''
-        text += '''<blockquote><p>For more help on which formats are supported by arXiv, please see:'''\
-                '''<ul>'''\
-                '''<li><a href="http://arxiv.org/help/submit" target="_blank">'''\
-                    '''arXiv submission process</a></li>'''\
-                '''<li><a href="http://arxiv.org/help/submit_tex" target="_blank">'''\
-                    '''arXiv TeX submission</a></li>'''\
-                '''<li><a href="http://arxiv.org/help/submit_docx" target="_blank">'''\
-                    '''arXiv Docx submission</a></li>'''\
-                '''<li><a href="http://arxiv.org/help/submit_pdf" target="_blank">'''\
-                    '''arXiv PDF submission</a></li>'''\
-                '''</ul></blockquote>'''
-        return text
+    <div id="bibsword_submit_step_1_details" class="bibsword_submit_step_details">
+    %(step_1_details)s
+    </div>
 
+    <div id="bibsword_submit_step_2_title" class="bibsword_submit_step_title" style="display: none;">
+    %(step_2_title)s
+    </div>
 
-    def fill_contributors_list(self, contributors):
-        '''
-            This method display each contributors in the format of an editable input
-            text. This allows the user to modifie it.
-            @param contributors: The list of all contributors of the document
-            @return: the html code that display each dropdown list
-        '''
+    <div id="bibsword_submit_step_2_details" class="bibsword_submit_step_details" style="display: none;">
+    %(step_2_details)s
+    </div>
 
-        output = ''
+    <div id="bibsword_submit_step_3_title" class="bibsword_submit_step_title" style="display: none;">
+    %(step_3_title)s
+    </div>
 
-        is_author = True
+    <div id="bibsword_submit_step_3_details" class="bibsword_submit_step_details" style="display: none;">
+    %(step_3_details)s
+    </div>
 
-        for author in contributors:
+    <div id="bibsword_submit_step_4_title" class="bibsword_submit_step_title" style="display: none;">
+    %(step_4_title)s
+    </div>
 
-            nb_rows = 2
+    <div id="bibsword_submit_step_4_details" class="bibsword_submit_step_details" style="display: none;">
+    %(step_4_details)s
+    </div>
 
-            author_name = \
-            '''<LABEL for="name">Name: </LABEL><input type = "text" ''' \
-            '''name = "contributor_name" size = "100" value = "%s" ''' \
-            '''id="name"/>''' % author['name']
+    <div id="bibsword_submit_step_final_title" class="bibsword_submit_step_title" style="display: none;">
+    %(step_final_title)s
+    </div>
 
-            author_email = \
-            '''<LABEL for = "email">Email: </LABEL>''' \
-            '''<input type = "text" name = "contributor_email" ''' \
-            '''size = "100" value = "%s" id = "email"/>''' % author['email']
+    <div id="bibsword_submit_step_final_details" class="bibsword_submit_step_details" style="display: none;">
+    %(step_final_details)s
+    </div>
 
-            author_affiliations = []
-            for affiliation in author['affiliation']:
-                affiliation_row = \
-                '''<LABEL for = "affiliation">Affiliation: </LABEL> ''' \
-                '''<input type="text" name = "contributor_affiliation" ''' \
-                '''size = "100" value = "%s" id = "affiliation"/>''' % \
-                    affiliation
-                author_affiliations.append(affiliation_row)
-                nb_rows = nb_rows + 1
-            affiliation_row = \
-            '''<LABEL for = "affiliation">Affiliation: </LABEL>''' \
-            '''<input type = "text" name = "contributor_affiliation" ''' \
-            '''size = "100" id = "affiliation"/>'''
-            author_affiliations.append(affiliation_row)
-            nb_rows = nb_rows + 1
+</div>
 
-            if is_author:
-                output += '''<tr><td rowspan = "%s">Author: </td>''' % nb_rows
-                is_author = False
-            else:
-                output += '''<tr><td rowspan = "%s">Contributor: </td>''' % \
-                    nb_rows
-            output += '''<td>%s</td></tr>''' % author_name
-            if author_email != '':
-                output += '''<tr><td>%s</td></tr>''' % author_email
-            for affiliation in author_affiliations:
-                output += '''<tr><td>%s</td></tr>''' % affiliation
-            output += \
-                '''<input type = "hidden" name = "contributor_affiliation" ''' \
-                '''value = "next"/>'''
+<script type="text/javascript" src="%(CFG_SITE_URL)s/js/jquery-ui.min.js"></script>
 
-        return output
+<script>
+// Actions to take following the confirmation of step 1: the selection of the server
+$(".bibsword_submit_container").on("click", "#%(step_1_server_confirm_id)s", function () {
 
+    $.ajax({
 
-    def fill_journal_refs_list(self, journal_refs):
-        '''
-            This method display each journal references in the format of an editable
-            input text. This allows the user to modifie it.
-            @param journal_refs: The list of all journal references of the document
-            @return: the html code that display each dropdown list
-        '''
+        url: "/sword_client/submit_step_1",
 
-        html = ''
+        data: {
+            "sid": "%(sid)s",
+            "server_id": $("#%(step_1_server_select_id)s").val(),
+            "ln": "%(ln)s"
+        },
 
-        if len(journal_refs) > 0:
+        beforeSend: function(){
+            // Set the new text and color of the current step title (inactive)
+            $("#bibsword_submit_step_1_title").html(" %(step_1_title_done_text)s " + $("#%(step_1_server_select_id)s option:selected").html());
+            $("#bibsword_submit_step_1_title").css("color", "%(title_done_color)s");
+            $("<img>").attr({"style" : "vertical-align:middle", "src" : "%(title_done_image)s"}).prependTo("#bibsword_submit_step_1_title");
+            $("#bibsword_submit_step_1_details").hide(%(animation_speed)s, function dummy() {
+                $("#bibsword_submit_step_2_title").show(%(animation_speed)s, function dummy() {
+                    $("#bibsword_submit_step_2_details").show(%(animation_speed)s);
+                });
+            });
+        },
 
-            html += '''
-            <tr>
-                <td align="left"><p>Journal references: </p></td><td>
-            '''
+        success: function(data){
+            // Calculate the step 2 details content
+            $("#bibsword_submit_step_2_details").html(data);
+        },
 
-            html = html + ''.join([
-                '''
-                <p><input type="text" name="journal_refs" size="100" ''' \
-                '''value="%(journal_ref)s"/></p>
-                ''' % {
-                        'journal_ref': journal_ref
-                } for journal_ref in journal_refs
-            ])
+        error: function(jqXHR) {
+            alert("%(error_message)s");
+        },
 
-            html = html + '''
-                </td>
-            </tr>
-            '''
+    });
 
-        return html
+});
 
+// Actions to take following the confirmation of step 2: the selection of the collection
+$(".bibsword_submit_container").on("click", "#%(step_2_collection_confirm_id)s", function () {
 
-    def fill_report_nos_list(self, report_nos):
-        '''
-            Concatate a string containing the report number html table rows
-        '''
+    $.ajax({
 
-        html = ''
+        url: "/sword_client/submit_step_2",
 
-        if len(report_nos) > 0:
+        data: {
+            "sid": "%(sid)s",
+            "collection_url": $("#%(step_2_collection_select_id)s").val(),
+            "ln": "%(ln)s"
+        },
 
-            html = '''
-            <tr>
-                <td align="left"><p>Report numbers: </p></td><td>
-            '''
+        beforeSend: function(){
+            // Set the new text and color of the current step title (inactive)
+            $("#bibsword_submit_step_2_title").html(" %(step_2_title_done_text)s " + $("#%(step_2_collection_select_id)s option:selected").html());
+            $("#bibsword_submit_step_2_title").css("color", "%(title_done_color)s");
+            $("<img>").attr({"style" : "vertical-align:middle", "src" : "%(title_done_image)s"}).prependTo("#bibsword_submit_step_2_title");
+            $("#bibsword_submit_step_2_details").hide(%(animation_speed)s, function dummy() {
+                $("#bibsword_submit_step_3_title").show(%(animation_speed)s, function dummy() {
+                    $("#bibsword_submit_step_3_details").show(%(animation_speed)s);
+                });
+            });
+        },
 
-            html = html + ''.join([
-                '''
-                <p><input type="text" name="report_nos" size="100" ''' \
-                '''value="%(report_no)s"/></p>''' % {
-                        'report_no': report_no
-                } for report_no in report_nos
-            ])
+        success: function(data){
+            // Calculate the step 3 details content
+            $("#bibsword_submit_step_3_details").html(data);
+        },
 
-            html = html + '''
-                </td>
-            </tr>
-            '''
+        error: function(jqXHR) {
+            alert("%(error_message)s");
+        },
 
-        return html
+    });
 
+});
 
-    def get_list_id_categories(self, categories):
-        '''
-            gives the id of the categores tuple
-        '''
+// Actions to take during step 3: addition of optional categories
+var optional_categories_urls = [];
+//TODO: What should this number be?
+var maximum_number_of_optional_categories = 4;
+$("#bibsword_submit_step_3_details").on("click", "#%(step_3_optional_categories_add_id)s", function () {
 
-        id_categories = []
+    // Is the adding optional categories enabled?
+    var disabled_status = $("#%(step_3_optional_categories_add_id)s").attr("disabled");
+    if ( disabled_status == "disabled" ) {
+        return;
+    }
 
-        for category in categories:
-            id_categories.append(category['id'])
+    // Get the index of the currently selected option
+    var current_index = $("#%(step_3_optional_categories_select_id)s option:selected").index();
+    var current_index_plus_one = current_index + 1;
 
-        return id_categories
+    // Let's make sure there was a valid option to select in the first place
+    if ( current_index >= 0 ) {
 
+        // Get the option's value and text
+        var current_option = $("#%(step_3_optional_categories_select_id)s").val();
+        var current_label  = $("#%(step_3_optional_categories_select_id)s option:selected").text();
 
-    def format_media_list_by_type(self, medias):
-        '''
-            This function format the media by type (Main, Uploaded, ...)
-        '''
+        // Push the option's value to the optional_categories_urls
+        optional_categories_urls.push(current_option);
 
-        #format media list by type of document
-        media_type = []
+        // Create and append the optional category
+        var current_added_item = '<li class="bibsword_submit_step_details_legend_item">';
+        current_added_item    += '<span value="' + current_option + '">' + current_label + '</span>';
+        current_added_item    += "&nbsp;";
+        current_added_item    += '<img src="%(step_3_optional_categories_remove_image)s"/>';
+        current_added_item    += "</li>";
+        $("#%(step_3_optional_categories_legend_id)s").append(current_added_item);
 
-        for media in medias:
+        // Remove the added optional category from the select element
+        // and automatically select the next option in the list.
+        ////$("#%(step_3_optional_categories_select_id)s option:selected").remove();
+        $("#%(step_3_optional_categories_select_id)s option:selected").attr("disabled", "disabled");
+        $("#%(step_3_optional_categories_select_id)s option:eq(" + current_index_plus_one + ")").attr("selected", "selected");
 
-            # if it is the first media of this type, create a new type
-            is_type_in_media_type = False
-            for type in media_type:
-                if media['collection'] == type['media_type']:
-                    is_type_in_media_type = True
+        if ( maximum_number_of_optional_categories > 0 && optional_categories_urls.length >= maximum_number_of_optional_categories ) {
+            $("#%(step_3_optional_categories_add_id)s").attr("disabled", "disabled");
+            $("#%(step_3_optional_categories_add_id)s strong").html("maximum already reached");
+        }
 
-            if is_type_in_media_type == False:
-                type = {}
-                type['media_type'] = media['collection']
-                type['media_list'] = []
-                media_type.append(type)
+    }
 
-            # insert the media in the good media_type element
-            for type in media_type:
-                if type['media_type'] == media['collection']:
-                    type['media_list'].append(media)
+});
 
-        return media_type
+// Actions to take during step 3: removal of optional categories
+$("#bibsword_submit_step_3_details").on("click", "#%(step_3_optional_categories_legend_id)s img", function () {
+
+    // Get the option's value and text
+    var current_option = $(this).siblings("span").attr("value");
+    var current_label  = $(this).siblings("span").text();
+
+    // Check if the option exists in the optional_categories_urls
+    var current_option_index = optional_categories_urls.indexOf(current_option)
+    if ( current_option_index != -1 ) {
+
+        // Remove the option's value from the optional_categories_urls
+        optional_categories_urls.splice(current_option_index, 1)
+
+        // Remove the optional category from the list of added optional categories
+        // Use .remove() or .detach() ?
+        $(this).parent().remove();
+
+        // Add this optional category in the optional categories select again
+        $("#%(step_3_optional_categories_select_id)s option[value='" + current_option + "']").attr("disabled", false);
+
+        if ( maximum_number_of_optional_categories > 0 && optional_categories_urls.length < maximum_number_of_optional_categories ) {
+            $("#%(step_3_optional_categories_add_id)s").attr("disabled", false);
+            $("#%(step_3_optional_categories_add_id)s strong").html("&#10010;");
+        }
+
+    }
+
+});
+
+// Actions to take following the confirmation of step 3: the selection of the categories
+$(".bibsword_submit_container").on("click", "#%(step_3_categories_confirm_id)s", function () {
+
+    $.ajax({
+
+        url: "/sword_client/submit_step_3",
+
+        data: $.param({
+            "sid": "%(sid)s",
+            "mandatory_category_url": $("#%(step_3_mandatory_category_select_id)s").val(),
+            "optional_categories_urls": optional_categories_urls,
+            "ln": "%(ln)s"
+        }, true),
+
+        beforeSend: function(){
+            // Set the new text and color of the step 3 title (inactive)
+            if ( optional_categories_urls.length > 0 ) {
+                $("#bibsword_submit_step_3_title").html(" %(step_3_title_done_text_part_1)s " + $("#%(step_3_mandatory_category_select_id)s option:selected").html() + " (+" + optional_categories_urls.length.toString() + " %(step_3_title_done_text_part_2)s)");
+            }
+            else {
+                $("#bibsword_submit_step_3_title").html(" %(step_3_title_done_text_part_1)s " + $("#%(step_3_mandatory_category_select_id)s option:selected").html());
+            }
+            $("#bibsword_submit_step_3_title").css("color", "%(title_done_color)s");
+            $("<img>").attr({"style" : "vertical-align:middle", "src" : "%(title_done_image)s"}).prependTo("#bibsword_submit_step_3_title");
+            $("#bibsword_submit_step_3_details").hide(%(animation_speed)s, function dummy() {
+                $("#bibsword_submit_step_4_title").show(%(animation_speed)s, function dummy() {
+                    $("#bibsword_submit_step_4_details").show(%(animation_speed)s);
+                });
+            });
+        },
+
+        success: function(data){
+            // Calculate the step 4 details content
+            $("#bibsword_submit_step_4_details").html(data);
+        },
+
+        complete: function(data){
+            // Make some of the submission fields sortable
+            $("#bibsword_submit_step_4_additional_rn_sortable").sortable({
+                placeholder: "highlight"
+            });
+            $("#bibsword_submit_step_4_contributors_sortable").sortable({
+                placeholder: "highlight"
+            });
+        },
+
+        error: function(jqXHR) {
+            alert("%(error_message)s");
+        },
+
+    });
+
+});
+
+// Actions to take during step 4: inserting and removing additional report numbers
+$("#bibsword_submit_step_4_details").on("click", ".%(step_4_additional_rn_insert_class)s", function () {
+    var data = '%(step_4_additional_rn_insert_data)s';
+    $("#bibsword_submit_step_4_additional_rn_sortable").append(data);
+});
+$("#bibsword_submit_step_4_details").on("click", ".%(step_4_additional_rn_remove_class)s", function () {
+    $(this).parent().parent().hide(%(animation_speed)s, function dummy() {
+        $(this).remove();
+    });
+});
+
+// Actions to take during step 4: inserting and removing contributors
+$("#bibsword_submit_step_4_details").on("click", ".%(step_4_contributors_insert_class)s", function () {
+    var data = '%(step_4_contributors_insert_data)s';
+    $("#bibsword_submit_step_4_contributors_sortable").append(data);
+});
+$("#bibsword_submit_step_4_details").on("click", ".%(step_4_contributors_remove_class)s", function () {
+    $(this).parent().parent().hide(%(animation_speed)s, function dummy() {
+        $(this).remove();
+    });
+});
+
+// Actions to take following the confirmation of step 4: the submission
+$(".bibsword_submit_container").on("click", "#%(step_4_submission_confirm_id)s", function () {
+
+    $.ajax({
+
+        url: "/sword_client/submit_step_4",
+
+        data: $.param({
+            "sid": "%(sid)s",
+            "rn": $("#%(step_4_submission_data_id)s input[name='rn']").val(),
+            "additional_rn": $("#%(step_4_submission_data_id)s input[name='additional_rn']").serializeArray().map(function(element){return element.value;}),
+            "title": $("#%(step_4_submission_data_id)s input[name='title']").val(),
+            "author_fullname": $("#%(step_4_submission_data_id)s input[name='author_fullname']").val(),
+            "author_email": $("#%(step_4_submission_data_id)s input[name='author_email']").val(),
+            "author_affiliation": $("#%(step_4_submission_data_id)s input[name='author_affiliation']").val(),
+            "abstract": $("#%(step_4_submission_data_id)s textarea[name='abstract']").val(),
+            "contributor_fullname": $("#%(step_4_submission_data_id)s input[name='contributor_fullname']").serializeArray().map(function(element){return element.value;}),
+            "contributor_email": $("#%(step_4_submission_data_id)s input[name='contributor_email']").serializeArray().map(function(element){return element.value;}),
+            "contributor_affiliation": $("#%(step_4_submission_data_id)s input[name='contributor_affiliation']").serializeArray().map(function(element){return element.value;}),
+            "files": $("#%(step_4_submission_data_id)s input[name='files']").serializeArray().map(function(element){return element.value;}),
+            "ln": "%(ln)s"
+        }, true),
+
+        beforeSend: function(){
+            // Set the new text and color of the step 4 title (inactive)
+            $("#bibsword_submit_step_4_title").html(" %(step_4_title_done_text)s");
+            $("#bibsword_submit_step_4_title").css("color", "%(title_done_color)s");
+            $("<img>").attr({"style" : "vertical-align:middle", "src" : "%(title_done_image)s"}).prependTo("#bibsword_submit_step_4_title");
+
+            // Hide the current step details and show the next title and details
+            $("#bibsword_submit_step_4_details").hide(%(animation_speed)s, function dummy() {
+                $("#bibsword_submit_step_final_title").show(%(animation_speed)s, function dummy() {
+                    $("#bibsword_submit_step_final_details").show(%(animation_speed)s);
+                    });
+                });
+        },
+
+        success: function(data){
+            // Set the new text and color of the final step title (inactive)
+            $("#bibsword_submit_step_final_title").html(" %(step_final_title_done_text)s");
+            $("#bibsword_submit_step_final_title").css("color", "%(title_done_color)s");
+            $("<img>").attr({"style" : "vertical-align:middle", "src" : "%(title_done_image)s"}).prependTo("#bibsword_submit_step_final_title");
+
+            // Calculate the final step details content
+            $("#bibsword_submit_step_final_details").html(data);
+        },
+
+        error: function(jqXHR) {
+            alert("%(error_message)s");
+        },
+
+    });
+
+});
+
+// We might want to jump to a specific step directly
+if ( "%(step)s" == "1" ) {
+    $("#%(step_1_server_confirm_id)s").trigger("click");
+};
+
+</script>
+
+        """ % {
+            "header": self._submit_header(
+                recid,
+                title,
+                author,
+                report_number,
+                ln
+            ),
+
+            "step_1_title": _("Where would you like to submit?"),
+            "step_1_details": self.submit_step_1_details(
+                servers,
+                server_id,
+                ln
+            ),
+            "step_1_title_done_text": _("Selected server:"),
+            "step_1_server_select_id": "bibsword_submit_step_1_select",
+            "step_1_server_confirm_id": "bibsword_submit_step_1_confirm",
+
+            "step_2_title": _("What collection would you like to submit to?"),
+            "step_2_details": self._submit_loading(ln),
+            "step_2_title_done_text": _("Selected collection:"),
+            "step_2_collection_select_id": "bibsword_submit_step_2_select",
+            "step_2_collection_confirm_id": "bibsword_submit_step_2_confirm",
+
+            "step_3_title": _("What category would you like to submit to?"),
+            "step_3_details": self._submit_loading(ln),
+            "step_3_optional_categories_add_id":
+                "bibsword_submit_step_3_optional_categories_add",
+            "step_3_optional_categories_select_id":
+                "bibsword_submit_step_3_optional_categories_select",
+            "step_3_optional_categories_legend_id":
+                "bibsword_submit_step_3_optional_categories_legend",
+            "step_3_optional_categories_remove_image":
+                "%s/%s" % (CFG_SITE_URL, "img/cross_red.gif"),
+            "step_3_title_done_text_part_1": _("Selected category:"),
+            "step_3_title_done_text_part_2": _("additional categories"),
+            "step_3_mandatory_category_select_id":
+                "bibsword_submit_step_3_mandatory_category_select",
+            "step_3_categories_confirm_id":
+                "bibsword_submit_step_3_collection_confirm",
+
+            "step_4_additional_rn_insert_class":
+                "bibsword_submit_step_4_additional_rn_insert",
+            "step_4_additional_rn_insert_data":
+                "".join(TemplateSwordClient._submit_step_4_additional_rn_input_block(
+                    name='additional_rn',
+                    value='',
+                    size='25',
+                    placeholder=_('Report number...'),
+                    sortable_label=_("&#8691;"),
+                    remove_class='bibsword_submit_step_4_additional_rn_remove negative',
+                    remove_label=_("&#10008;")
+                ).splitlines()),
+            "step_4_additional_rn_remove_class":
+                "bibsword_submit_step_4_additional_rn_remove",
+            "step_4_contributors_insert_class":
+                "bibsword_submit_step_4_contributors_insert",
+            "step_4_contributors_insert_data":
+                "".join(TemplateSwordClient._submit_step_4_contributors_input_block(
+                    fullname=(
+                        _('Fullname:'),
+                        'contributor_fullname',
+                        '',
+                        '25',
+                        _('Fullname...'),
+                    ),
+                    email=(
+                        _('E-mail:'),
+                        'contributor_email',
+                        '',
+                        '35',
+                        _('E-mail...'),
+                    ),
+                    affiliation=(
+                        _('Affiliation:'),
+                        'contributor_affiliation',
+                        '',
+                        '35',
+                        _('Affiliation...'),
+                    ),
+                    sortable_label=_("&#8691;"),
+                    remove_class='bibsword_submit_step_4_contributors_remove negative',
+                    remove_label=_("&#10008;")
+                ).splitlines()),
+            "step_4_contributors_remove_class":
+                "bibsword_submit_step_4_contributors_remove",
+            "step_4_title":
+                _("Please review and, if needed," +
+                  " correct the following information:"),
+            "step_4_details": self._submit_loading(ln),
+            "step_4_title_done_text": _(
+                "All the information has been prepared for submission"
+            ),
+            "step_4_submission_data_id": "bibsword_submit_step_4_submission_data",
+            "step_4_submission_confirm_id": "bibsword_submit_step_4_submission_confirm",
+
+            "step_final_title": _(
+                "Please wait while your submission is being processed..."
+            ),
+            "step_final_details": self._submit_loading(ln),
+            "step_final_title_done_text": _(
+                "Your submission has been processed"
+            ),
+
+            "title_done_color": "#999999",
+            "title_done_image": "%s/%s" % (CFG_SITE_URL, "img/aid_check.png"),
+            "animation_speed": 300,
+            "error_message": _("An error has occured. " +
+                               "The administrators have been informed."),
+
+            "CFG_SITE_URL": CFG_SITE_URL,
+            "sid": sid,
+            "step": step,
+            "ln": ln,
+        }
+
+        return out
+
+    def _submit_header(
+        self,
+        record_id,
+        title,
+        author,
+        report_number,
+        ln
+    ):
+        """
+        """
+
+        _ = gettext_set_language(ln)
+
+        out = """
+        {submitting} <strong><a target="_blank" href="{CFG_SITE_URL}/{CFG_SITE_RECORD}/{record_id}">{title}</a></strong> ({report_number}) {by} <strong>{author}</strong>
+        """.format(
+            submitting=_("You are submitting:"),
+            CFG_SITE_URL=CFG_SITE_URL,
+            CFG_SITE_RECORD=CFG_SITE_RECORD,
+            record_id=record_id,
+            title=escape(title, True),
+            report_number=escape(report_number, True),
+            by=_("by"),
+            author=escape(author, True)
+        )
+
+        return out
+
+    def _submit_loading(self, ln):
+        """
+        NOTE_2015
+        """
+
+        _ = gettext_set_language(ln)
+
+        out = """
+        <img style="vertical-align:middle" src="%s/%s" /> &nbsp; %s
+        """ % (CFG_SITE_URL, "img/loading.gif", _("Loading..."))
+        return out
+
+    def submit_step_1_details(
+        self,
+        servers,
+        server_id,
+        ln
+    ):
+        """
+        """
+
+        _ = gettext_set_language(ln)
+
+        confirmation = """
+        <button id="%s">%s</button>
+        """ % (
+            "bibsword_submit_step_1_confirm",
+            _("Confirm and continue")
+        )
+
+        out = """
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_label">
+                <label>%(label)s</label>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                %(selection)s
+            </div>
+        </div>
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                %(confirmation)s
+            </div>
+        </div>
+        """ % {
+            'label': _("Server:"),
+            'selection': TemplateSwordClient._submit_prepare_select_tag(
+                "bibsword_submit_step_1_select",
+                "server_id",
+                servers,
+                default_option=server_id
+            ),
+            'confirmation': confirmation,
+        }
+
+        return out
+
+    def submit_step_2_details(
+        self,
+        collections,
+        ln
+    ):
+        """
+        NOTE_2015
+        """
+
+        _ = gettext_set_language(ln)
+
+        confirmation = """
+        <button id="%s">%s</button>
+        """ % (
+            "bibsword_submit_step_2_confirm",
+            _("Confirm and continue")
+        )
+
+        out = """
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_label">
+                <label>%(label)s</label>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                %(selection)s
+            </div>
+        </div>
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                %(confirmation)s
+            </div>
+        </div>
+        """ % {
+            "label": _("Collection:"),
+            "selection": TemplateSwordClient._submit_prepare_select_tag(
+                "bibsword_submit_step_2_select",
+                "collection_url",
+                collections
+            ),
+            "confirmation": confirmation
+        }
+
+        return out
+
+    def submit_step_3_details(
+        self,
+        mandatory_categories,
+        optional_categories,
+        ln
+    ):
+        """
+        """
+
+        _ = gettext_set_language(ln)
+
+        confirmation = """
+        <button id="%s">%s</button>
+        """ % (
+            "bibsword_submit_step_3_collection_confirm",
+            _("Confirm and continue")
+        )
+
+        # TODO: Different SWORD servers will have different concepts
+        # of categories (mandatory, optional, etc). Write a function
+        # that accomodates all cases.
+        if not mandatory_categories:
+            mandatory_categories = optional_categories
+            optional_categories = None
+
+        out = """
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_label">
+                <label>%(label)s</label>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                %(primary_category_selection)s
+            </div>
+        </div>
+        """ % {
+            'label': _("Category:"),
+            'primary_category_selection':
+                TemplateSwordClient._submit_prepare_select_tag(
+                    "bibsword_submit_step_3_mandatory_category_select",
+                    "mandatory_category_url",
+                    mandatory_categories
+                ),
+        }
+
+        if optional_categories:
+
+            addition = """
+            <button id="%s">%s</button>
+            """ % (
+                "bibsword_submit_step_3_optional_categories_add",
+                "<strong>" + _("&#10010;") + "</strong>"
+            )
+
+            out += """
+            <div class="bibsword_submit_step_details_field">
+                <div class="bibsword_submit_step_details_label">
+                    <label>%(label)s</label>
+                </div>
+                <div class="bibsword_submit_step_details_input display_inline_block">
+                    %(additional_category_selection)s
+                    %(addition)s
+                </div>
+                <div class="bibsword_submit_step_details_legend">
+                    <ul id="%(additional_category_legend_id)s">
+                    </ul>
+                </div>
+            </div>
+            """ % {
+                "label": _("Additional optional categories:"),
+                "additional_category_selection":
+                    TemplateSwordClient._submit_prepare_select_tag(
+                        "bibsword_submit_step_3_optional_categories_select",
+                        None,
+                        optional_categories
+                    ),
+                "addition": addition,
+                "additional_category_legend_id":
+                    "bibsword_submit_step_3_optional_categories_legend",
+            }
+
+        out += """
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                %(confirmation)s
+            </div>
+        </div>
+        """ % {
+            "confirmation": confirmation,
+        }
+
+        return out
+
+    @staticmethod
+    def _submit_step_4_additional_rn_input_block(
+        name,
+        value,
+        size,
+        placeholder,
+        sortable_label,
+        remove_class,
+        remove_label
+    ):
+        """
+        """
+
+        out = """
+        <div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <span class="sortable">%(sortable_label)s</span>
+                <input type="text" name="%(name)s" value="%(value)s" size="%(size)s" placeholder="%(placeholder)s" />
+                <button class="%(remove_class)s"><strong>%(remove_label)s</strong></button>
+            </div>
+        </div>
+        """ % {
+            'name': name,
+            'value': value,
+            'size': size,
+            'placeholder': placeholder,
+            'sortable_label': sortable_label,
+            'remove_class': remove_class,
+            'remove_label': remove_label,
+        }
+
+        return out
+
+    @staticmethod
+    def _submit_step_4_contributors_input_block(
+        fullname,
+        email,
+        affiliation,
+        sortable_label,
+        remove_class,
+        remove_label
+    ):
+        """
+        """
+
+        out = """
+        <div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <span class="sortable">%(sortable_label)s</span>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <div>
+                    <label>%(label_fullname)s</label>
+                </div>
+                <div>
+                    <input type="text" name="%(name_fullname)s" value="%(value_fullname)s" size="%(size_fullname)s" placeholder="%(placeholder_fullname)s" />
+                </div>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <div>
+                    <label>%(label_email)s</label>
+                </div>
+                <div>
+                    <input type="text" name="%(name_email)s" value="%(value_email)s" size="%(size_email)s" placeholder="%(placeholder_email)s" />
+                </div>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <div>
+                    <label>%(label_affiliation)s</label>
+                </div>
+                <div>
+                    <input type="text" name="%(name_affiliation)s" value="%(value_affiliation)s" size="%(size_affiliation)s" placeholder="%(placeholder_affiliation)s" />
+                </div>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <button class="%(remove_class)s"><strong>%(remove_label)s</strong></button>
+            </div>
+        </div>
+        """ % {
+            'label_fullname': fullname[0],
+            'name_fullname': fullname[1],
+            'value_fullname': fullname[2],
+            'size_fullname': fullname[3],
+            'placeholder_fullname': fullname[4],
+
+            'label_email': email[0],
+            'name_email': email[1],
+            'value_email': email[2],
+            'size_email': email[3],
+            'placeholder_email': email[4],
+
+            'label_affiliation': affiliation[0],
+            'name_affiliation': affiliation[1],
+            'value_affiliation': affiliation[2],
+            'size_affiliation': affiliation[3],
+            'placeholder_affiliation': affiliation[4],
+
+            'sortable_label': sortable_label,
+            'remove_class': remove_class,
+            'remove_label': remove_label,
+        }
+
+        return out
+
+    def submit_step_4_details(
+        self,
+        metadata,
+        files,
+        maximum_number_of_contributors,
+        ln
+    ):
+        """
+        """
+
+        _ = gettext_set_language(ln)
+
+        #######################################################################
+        # Confirmation button
+        #######################################################################
+        confirmation_text = """
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <button id="%(id)s">%(value)s</button>
+            </div>
+        </div>
+        """ % {
+            'id': "bibsword_submit_step_4_submission_confirm",
+            'value': _("Confirm and submit"),
+        }
+
+        #######################################################################
+        # Title
+        #######################################################################
+        title_text = """
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_label">
+                <label>%(label)s</label>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <input class="mandatory" type="text" name="%(name)s" value="%(value)s" size="%(size)s" placeholder="%(placeholder)s" />
+            </div>
+        </div>
+        """ % {
+            'label': _('Title:'),
+            'placeholder': _('Title...'),
+            'value': metadata['title'] and escape(metadata['title'], True) or '',
+            'size': '100',
+            'name': 'title',
+        }
+
+        #######################################################################
+        # Author
+        #######################################################################
+        author_text = """
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_label">
+                <label>%(label)s</label>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <div>
+                    <label>%(label_fullname)s</label>
+                </div>
+                <div>
+                    <input class="mandatory" type="text" name="%(name_fullname)s" value="%(value_fullname)s" size="%(size_fullname)s" placeholder="%(placeholder_fullname)s" />
+                </div>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <div>
+                    <label>%(label_email)s</label>
+                </div>
+                <div>
+                    <input class="mandatory" type="text" name="%(name_email)s" value="%(value_email)s" size="%(size_email)s" placeholder="%(placeholder_email)s" />
+                </div>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <div>
+                    <label>%(label_affiliation)s</label>
+                </div>
+                <div>
+                    <input type="text" name="%(name_affiliation)s" value="%(value_affiliation)s" size="%(size_affiliation)s" placeholder="%(placeholder_affiliation)s" />
+                </div>
+            </div>
+        </div>
+        """ % {
+            'label': _('Author:'),
+            'label_fullname': _('Fullname:'),
+            'placeholder_fullname': _('Fullname...'),
+            'value_fullname': metadata['author'][0] and escape(metadata['author'][0], True) or '',
+            'size_fullname': '25',
+            'name_fullname': 'author_fullname',
+            'label_email': _('E-mail:'),
+            'placeholder_email': _('E-mail...'),
+            'value_email': metadata['author'][1] and escape(metadata['author'][1], True) or '',
+            'size_email': '35',
+            'name_email': 'author_email',
+            'label_affiliation': _('Affiliation:'),
+            'placeholder_affiliation': _('Affiliation...'),
+            'value_affiliation': metadata['author'][2] and escape(metadata['author'][2], True) or '',
+            'size_affiliation': '35',
+            'name_affiliation': 'author_affiliation',
+        }
+
+        #######################################################################
+        # Contributors
+        #######################################################################
+        contributors_text = """
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_label">
+                <label>%(label)s</label>
+            </div>
+        """ % {
+            'label': _('Contributors:'),
+        }
+
+        if len(metadata['contributors']) > maximum_number_of_contributors:
+            contributors_text += """
+            <div class="bibsword_submit_step_details_label">
+                <span class="warning">%(text)s</span>
+            </div>
+            """ % {
+                'text': _('Displaying only the first {0}').format(maximum_number_of_contributors),
+            }
+
+        contributors_text += """
+        <div id="bibsword_submit_step_4_contributors_sortable">
+        """
+
+        for contributor in metadata['contributors'][:maximum_number_of_contributors]:
+
+            contributors_text += TemplateSwordClient._submit_step_4_contributors_input_block(
+                fullname=(
+                    _('Fullname:'),
+                    'contributor_fullname',
+                    contributor[0] and escape(contributor[0], True) or '',
+                    '25',
+                    _('Fullname...'),
+                ),
+                email=(
+                    _('E-mail:'),
+                    'contributor_email',
+                    contributor[1] and escape(contributor[1], True) or '',
+                    '35',
+                    _('E-mail...'),
+                ),
+                affiliation=(
+                    _('Affiliation:'),
+                    'contributor_affiliation',
+                    contributor[2] and escape(contributor[2], True) or '',
+                    '35',
+                    _('Affiliation...'),
+                ),
+                sortable_label=_("&#8691;"),
+                remove_class='bibsword_submit_step_4_contributors_remove negative',
+                remove_label=_("&#10008;")
+            )
+
+        contributors_text += """
+        </div>
+        """
+
+        contributors_text += """
+        <div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <button class="%(insert_class)s"><strong>%(insert_label)s</strong></button>
+                <label>%(label)s</label>
+            </div>
+        </div>
+        """ % {
+            'insert_class': 'bibsword_submit_step_4_contributors_insert positive',
+            'insert_label': _("&#10010;"),
+            'label': _("Insert another one..."),
+        }
+
+        contributors_text += """
+        </div>
+        """
+
+        #######################################################################
+        # Abstract
+        #######################################################################
+        abstract_text = """
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_label">
+                <label>%(label)s</label>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <textarea class="mandatory" name="%(name)s" rows="%(rows)s" cols="%(cols)s">%(value)s</textarea>
+            </div>
+        </div>
+        """ % {
+            'label': _('Abstract:'),
+            'value': metadata['abstract'] and escape(metadata['abstract'], True) or '',
+            'rows': '10',
+            'cols': '120',
+            'name': 'abstract',
+        }
+
+        #######################################################################
+        # Report number
+        #######################################################################
+        rn_text = """
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_label">
+                <label>%(label)s</label>
+            </div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <input type="text" name="%(name)s" value="%(value)s" size="%(size)s" placeholder="%(placeholder)s" />
+            </div>
+        </div>
+        """ % {
+            'label': _('Report number:'),
+            'placeholder': _('Report number...'),
+            'value': metadata['rn'] and escape(metadata['rn'], True) or '',
+            'size': '25',
+            'name': 'rn',
+        }
+
+        #######################################################################
+        # Additional report numbers
+        #######################################################################
+        additional_rn_text = """
+        <div class="bibsword_submit_step_details_field">
+            <div class="bibsword_submit_step_details_label">
+                <label>%(label)s</label>
+            </div>
+        """ % {
+            'label': _('Additional report numbers:'),
+        }
+
+        additional_rn_text += """
+        <div id="bibsword_submit_step_4_additional_rn_sortable">
+        """
+
+        for additional_rn in metadata['additional_rn']:
+
+            additional_rn_text += TemplateSwordClient._submit_step_4_additional_rn_input_block(
+                name='additional_rn',
+                value=additional_rn and escape(additional_rn, True) or '',
+                size='25',
+                placeholder=_('Report number...'),
+                sortable_label=_("&#8691;"),
+                remove_class='bibsword_submit_step_4_additional_rn_remove negative',
+                remove_label=_("&#10008;")
+            )
+
+        additional_rn_text += """
+        </div>
+        """
+
+        additional_rn_text += """
+        <div>
+            <div class="bibsword_submit_step_details_input display_inline_block">
+                <button class="%(insert_class)s"><strong>%(insert_label)s</strong></button>
+                <label>%(label)s</label>
+            </div>
+        </div>
+        """ % {
+            'insert_class': 'bibsword_submit_step_4_additional_rn_insert positive',
+            'insert_label': _("&#10010;"),
+            'label': _("Insert another one..."),
+        }
+
+        additional_rn_text += """
+        </div>
+        """
+
+        #######################################################################
+        # DOI
+        #######################################################################
+        # if metadata['doi']:
+
+        #     doi_text = """
+        #     <input type="hidden" name="%(name)s" value="%(value)s" />
+        #     """ % {
+        #         'name': 'doi',
+        #         'value': escape(metadata['doi'], True),
+        #     }
+
+        # else:
+        #     doi_text = ''
+
+        #######################################################################
+        # Journal information (code, title, page, year)
+        #######################################################################
+        # journal_info_text = ''
+
+        # for journal_info in zip(('code', 'title', 'page', 'year'), metadata['journal_info']):
+
+        #     if journal_info[1]:
+        #         journal_info_text += """
+        #         <input type="hidden" name="%(name)s" value="%(value)s" />
+        #         """ % {
+        #             'name': journal_info[0],
+        #             'value': escape(journal_info[1], True),
+        #         }
+
+        #######################################################################
+        # Files
+        #######################################################################
+        if files:
+            files_text = """
+            <div class="bibsword_submit_step_details_field">
+                <div class="bibsword_submit_step_details_label">
+                    <label>%(label)s</label>
+                </div>
+            """ % {
+                'label': _('Files'),
+            }
+
+            for file_key in files.iterkeys():
+
+                files_text += """
+                <div class="bibsword_submit_step_details_input">
+                    <input type="checkbox" name="%(name)s" value="%(value)s" checked="checked" style="vertical-align: middle;" />
+                    <a href="%(url)s" target="_blank">%(label)s</a>
+                </div>
+                """ % {
+                    'name': 'files',
+                    'value': str(file_key),
+                    'url': escape(files[file_key]['url'], True),
+                    'label': escape(files[file_key]['name'], True),
+                }
+
+            files_text += """
+            </div>
+            """
+
+        else:
+            files_text = ""
+
+        #######################################################################
+        # Complete final text. Reorder if necessary.
+        #######################################################################
+        text_open = """
+        <div id=%(id)s>
+        """ % {
+            "id": "bibsword_submit_step_4_submission_data",
+        }
+
+        text_body = (
+            rn_text +
+            additional_rn_text +
+            title_text +
+            author_text +
+            abstract_text +
+            contributors_text +
+            files_text +
+            confirmation_text
+        )
+
+        text_close = """
+        </div>
+        """
+
+        return text_open + text_body + text_close
+
+    def submit_step_final_details(
+        self,
+        ln
+    ):
+        """
+        Return the HTML for the final step details.
+        """
+
+        _ = gettext_set_language(ln)
+
+        out = _("The submission has been completed successfully.<br />" +
+                "You may check the status of all your submissions " +
+                "<a href='/sword_client/?ln={0}'>here</a>.").format(ln)
+
+        return out

@@ -775,6 +775,7 @@ AC_CONFIG_FILES([config.nice  \
      modules/bibsword/doc/admin/Makefile \
      modules/bibsword/doc/hacking/Makefile \
      modules/bibsword/lib/Makefile \
+     modules/bibsword/lib/client_servers/Makefile \
      modules/bibsword/etc/Makefile \
      modules/bibupload/bin/Makefile \
      modules/bibupload/bin/bibupload \

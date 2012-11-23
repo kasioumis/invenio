@@ -4048,4 +4048,260 @@ a.author_orcid_image_link {
   margin-right:10px;
 }
 
+/* BibSword START */
+table.bibsword_table {
+    border: 1px solid #FFCC00;
+    border-spacing: 0px;
+    border-collapse: separate;
+    box-shadow: 3px 3px 9px #AAAAAA;
+}
+
+table.bibsword_table td, table.bibsword_table th {
+    padding: 10px;
+    border: 1px solid #FFCC00;
+}
+
+table.bibsword_table thead {
+    background: #FFFFCC;
+}
+
+a.bibsword_anchor, a.bibsword_anchor:link, a.bibsword_anchor:visited, a.bibsword_anchor:active {
+   text-decoration: none;
+}
+
+a.bibsword_anchor:hover {
+   text-decoration: none;
+   color: red;
+}
+
+div.bibsword_modal_outer {
+    position: absolute;
+    left: 0;
+    right: 0;
+    margin-left: auto;
+    margin-right: auto;
+    top: 0;
+    bottom: 0;
+    margin-top: auto;
+    margin-bottom: auto;
+    height: 100%;
+    width: 100%;
+    background: rgba(66,66,66,0.66);
+    z-index: 8888;
+}
+
+div.bibsword_modal_inner {
+    position: absolute;
+    overflow: auto;
+    left: 0;
+    right: 0;
+    margin-left: auto;
+    margin-right: auto;
+    top: 0;
+    bottom: 0;
+    margin-top: auto;
+    margin-bottom: auto;
+    width: 35%;
+    min-width: 500px;
+    max-width: 600px;
+    height: 75%;
+    min-height: 600px;
+    max-height: 800px;
+    border: 2px solid #FFCC00;
+    border-radius: 10px;
+    background: rgba(246, 246, 246, 1);
+    -webkit-box-shadow: 5px 5px 10px 0px rgba(0,0,0,0.66);
+    -moz-box-shadow: 5px 5px 10px 0px rgba(0,0,0,0.66);
+    box-shadow: 5px 5px 10px 0px rgba(0,0,0,0.66);
+    z-index: 9999;
+}
+
+div.bibsword_modal_label {
+    width: 150px;
+    padding: 10px;
+    border-bottom: 2px solid #FFCC00;
+    border-right: 2px solid #FFCC00;
+    background-color: #FFFFCC;
+    border-top-left-radius: 9px;
+    border-bottom-right-radius: 10px;
+    text-align: center;
+    font-weight: bold;
+}
+
+div.bibsword_modal_content {
+    padding: 10px;
+}
+
+div.bibsword_modal_content label.bibsword_modal_content_field_title {
+    font-size: 100%;
+    color: black;
+    font-style: normal;
+    margin-left: 0px;
+}
+div.bibsword_modal_content div.bibsword_modal_content_field_subtitle {
+    font-size: 75%;
+    color: grey;
+    font-style: italic;
+    margin-left: 5px;
+}
+
+div.bibsword_modal_content input, select {
+    padding: 5px;
+    margin-left: 5px;
+    margin-top: 5px;
+    margin-bottom: 15px;
+}
+
+div.bibsword_modal_controls {
+    padding: 10px;
+    text-align: right;
+}
+
+div.bibsword_modal_controls button {
+    padding: 5px;
+}
+
+div.bibsword_submit_container {
+    padding: 0px;
+    margin:  0px;
+}
+
+div.bibsword_submit_header {
+    padding: 5px;
+    margin-bottom: 10px;
+}
+
+.bibsword_submit_step_title {
+    border: 1px #FFCC00 solid;
+    padding: 5px;
+    margin-bottom: 10px;
+    font-weight: bold;
+    background-color: #FFFFCC;
+}
+
+.bibsword_submit_step_details {
+    padding: 5px;
+    margin-bottom: 10px;
+}
+
+.bibsword_submit_step_details label {
+    font-weight: bold;
+}
+
+.bibsword_submit_step_details span.warning {
+    font-style: italic;
+    font-weight: normal;
+    font-size: small;
+    padding-left: 10px;
+    color: red;
+    margin-bottom: 2px;
+}
+
+.bibsword_submit_step_details div.bibsword_submit_step_details_field {
+    margin-bottom: 20px;
+}
+
+#bibsword_submit_step_4_additional_rn_sortable div.highlight, #bibsword_submit_step_4_contributors_sortable div.highlight {
+    border: 1px dotted grey;
+    height: 30px;
+    background: lightgrey;
+}
+
+.bibsword_submit_step_details div.bibsword_submit_step_details_label {
+    margin-bottom: 5px;
+}
+
+.bibsword_submit_step_details_input {
+    margin-bottom: 3px;
+}
+
+.bibsword_submit_step_details_input label {
+    font-style: italic;
+    font-weight: normal;
+    font-size: small;
+    padding-left: 10px;
+    color: grey;
+    margin-bottom: 2px;
+}
+
+.bibsword_submit_step_details_input span.sortable {
+    cursor: move;
+    font-size: large;
+}
+
+.bibsword_submit_step_details_input .mandatory {
+    border-top: 2px inset red;
+    border-left: 2px inset red;
+}
+
+.bibsword_submit_step_details_input button.negative {
+    color: red;
+}
+
+.bibsword_submit_step_details_input button.positive {
+    color: green;
+}
+
+.bibsword_submit_step_details_legend {
+}
+
+.bibsword_submit_step_details_legend ul {
+    margin: 0px;
+    padding: 0px;
+}
+
+.bibsword_submit_step_details_legend_item {
+    background-color: #FFFFCC;
+    border: 1px #FFCC00 dashed;
+    border-radius: 15px;
+    -moz-border-radius: 15px;
+    -webkit-border-radius: 15px;
+    -o-border-radius: 15px;
+    padding-top: 3px;
+    padding-bottom: 3px;
+    padding-left: 5px;
+    padding-right: 5px;
+    margin: 3px;
+    font-size: small;
+    color: #555555;
+    display: inline-block;
+}
+
+.bibsword_submit_step_details_legend_item img {
+    vertical-align: bottom;
+    cursor: pointer;
+}
+/* BibSword END */
+
+/* Generic START */
+.text_align_center {
+    text-align: center;
+}
+
+.font_size_150percent {
+    font-size: 150%;
+}
+
+.font_size_75percent {
+    font-size: 75%;
+}
+
+.margin_10px {
+    margin: 10px;
+}
+
+a.temporarily_disabled, button.temporarily_disabled {
+    color: grey !important;
+    cursor: progress !important;
+}
+
+div.display_inline {
+    display: inline;
+}
+
+div.display_inline_block {
+    display: inline-block;
+}
+/* Generic END */
+
 /* end of invenio.css */

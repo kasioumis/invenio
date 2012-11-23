@@ -238,11 +238,10 @@ except:
     WebInterfaceBatchUploaderPages = WebInterfaceDumbPages
 
 try:
-    from invenio.bibsword_webinterface import \
-         WebInterfaceSword
+    from invenio.bibsword_webinterface import WebInterfaceSwordClient
 except:
     register_exception(alert_admin=True, subject='EMERGENCY')
-    WebInterfaceSword = WebInterfaceDumbPages
+    WebInterfaceSwordClient = WebInterfaceDumbPages
 
 try:
     from invenio.ping_webinterface import \
@@ -359,7 +358,7 @@ class WebInterfaceInvenio(WebInterfaceSearchInterfacePages):
                    'exporter',
                    'kb',
                    'batchuploader',
-                   'bibsword',
+                   'sword_client',
                    'ping',
                    'admin2',
                    'linkbacks',
@@ -401,7 +400,7 @@ class WebInterfaceInvenio(WebInterfaceSearchInterfacePages):
         kb = WebInterfaceBibKnowledgePages()
         admin2 = WebInterfaceDisabledPages()
         batchuploader = WebInterfaceDisabledPages()
-        bibsword = WebInterfaceDisabledPages()
+        sword_client = WebInterfaceDisabledPages()
         ping = WebInterfacePingPages()
         linkbacks = WebInterfaceDisabledPages()
         author = WebInterfaceDisabledPages()
@@ -433,7 +432,7 @@ class WebInterfaceInvenio(WebInterfaceSearchInterfacePages):
         kb = WebInterfaceBibKnowledgePages()
         admin2 = WebInterfaceAdminPages()
         batchuploader = WebInterfaceBatchUploaderPages()
-        bibsword = WebInterfaceSword()
+        sword_client = WebInterfaceSwordClient()
         ping = WebInterfacePingPages()
         linkbacks = WebInterfaceRecentLinkbacksPages()
         author = WebInterfaceAuthor()

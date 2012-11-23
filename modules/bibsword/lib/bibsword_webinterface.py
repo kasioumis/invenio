@@ -1,8 +1,7 @@
-'''
-Forward to ArXiv.org source code
-'''
+# -*- coding: utf-8 -*-
+#
 # This file is part of Invenio.
-# Copyright (C) 2010, 2011 CERN.
+# Copyright (C) 2010, 2011, 2012, 2013, 2014, 2015, 2016 CERN.
 #
 # Invenio is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License as
@@ -18,496 +17,494 @@ Forward to ArXiv.org source code
 # along with Invenio; if not, write to the Free Software Foundation, Inc.,
 # 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA.
 
-__revision__ = "$Id$"
+"""
+BibSword Web Interface.
+"""
+
+from invenio.access_control_engine import(
+    acc_authorize_action
+)
+import invenio.bibsword_client as sword_client
+from invenio.config import(
+    CFG_SITE_LANG,
+    CFG_SITE_URL
+)
+from invenio.messages import(
+    gettext_set_language
+)
+from invenio.webinterface_handler import(
+    wash_urlargd,
+    WebInterfaceDirectory
+)
+from invenio.webpage import(
+    page
+)
+from invenio.webuser import(
+    getUid,
+    page_not_authorized
+)
+
 
 __lastupdated__ = """$Date$"""
 
-import os
-from invenio.access_control_engine import acc_authorize_action
-from invenio.config import CFG_SITE_URL, CFG_TMPDIR
-from invenio.webuser import page_not_authorized, collect_user_info
-from invenio.bibsword_client import perform_display_sub_status, \
-                                    perform_display_server_list, \
-                                    perform_display_collection_list, \
-                                    perform_display_category_list, \
-                                    perform_display_metadata, \
-                                    perform_submit_record, \
-                                    perform_display_server_infos, \
-                                    list_remote_servers
-from invenio.webpage import page
-from invenio.messages import gettext_set_language
-from invenio.webinterface_handler import wash_urlargd, WebInterfaceDirectory
-from invenio.websubmit_functions.Get_Recid import \
-                                           get_existing_records_for_reportnumber
-from invenio.search_engine_utils import get_fieldvalues
-from invenio.bibsword_config import CFG_MARC_REPORT_NUMBER, CFG_MARC_ADDITIONAL_REPORT_NUMBER
 
-class WebInterfaceSword(WebInterfaceDirectory):
-    """ Handle /bibsword set of pages."""
-    _exports = ['', 'remoteserverinfos']
+class WebInterfaceSwordClient(WebInterfaceDirectory):
+    """Web interface for the BibSword client."""
 
+    _exports = [
+        "",
+        "servers",
+        "server_options",
+        "submissions",
+        "submission_options",
+        "submit",
+        "submit_step_1",
+        "submit_step_2",
+        "submit_step_3",
+        "submit_step_4",
+    ]
 
-    def __init__(self, reqid=None):
-        '''Initialize'''
-        self.reqid = reqid
-
-
-    def __call__(self, req, form):
-
-        errors = []
-        warnings = []
-        body = ''
-        error_messages = []
-
-
-        #***********************************************************************
-        #  Get values from the form
-        #***********************************************************************
+    def submissions(self, req, form):
+        """Web interface for the existing submissions."""
+        # Check if the user has rights to manage the Sword client
+        auth_code, auth_message = acc_authorize_action(
+            req,
+            "run_sword_client"
+        )
+        if auth_code != 0:
+            return page_not_authorized(
+                req=req,
+                referer="/sword_client/",
+                text=auth_message,
+                navtrail=""
+            )
 
         argd = wash_urlargd(form, {
-            'ln' : (str, ''),
-
-            # information of the state of the form submission
-            'status' : (str, ''),
-            'submit' : (str, ''),
-            'last_row' : (str, ''),
-            'first_row' : (str, ''),
-            'offset' : (int, ''),
-            'total_rows' : (str, ''),
-
-            # mendatory informations
-            'id_record' : (str, ''),
-            'recid' : (int, 0),
-            'id_remote_server' : (str, ''),
-            'id_collection' : (str, ''),
-            'id_primary' : (str, ''),
-            'id_categories' : (list, []),
-
-            'id' : (str, ''),
-            'title' : (str, ''),
-            'summary' : (str, ''),
-            'author_name' : (str, ''),
-            'author_email' : (str, ''),
-            'contributor_name' : (list, []),
-            'contributor_email' : (list, []),
-            'contributor_affiliation' : (list, []),
-
-            # optionnal informations
-            'comment' : (str, ''),
-            'doi' : (str, ''),
-            'type' : (str, ''),
-            'journal_refs' : (list, []),
-            'report_nos' : (list, []),
-            'media' : (list, []),
-            'new_media' : (str, ''),
-            'filename' : (str, '')
+            "ln": (str, CFG_SITE_LANG),
         })
 
-        # set language for i18n text auto generation
-        _ = gettext_set_language(argd['ln'])
+        # Get the user ID
+        uid = getUid(req)
 
+        # Set language for i18n text auto generation
+        ln = argd["ln"]
+        _ = gettext_set_language(ln)
 
-        #authentication
-        (auth_code, auth_message) = self.check_credential(req)
+        body = sword_client.perform_request_submissions(
+            ln
+        )
+
+        navtrail = """
+&gt; <a class="navtrail" href="%(CFG_SITE_URL)s/sword_client">%(label)s</a>
+""" % {
+            'CFG_SITE_URL': CFG_SITE_URL,
+            'label': _("Sword Client"),
+        }
+
+        return page(
+            title=_("Submissions"),
+            body=body,
+            navtrail=navtrail,
+            lastupdated=__lastupdated__,
+            req=req,
+            language=ln
+        )
+
+    def submission_options(self, req, form):
+        """Web interface for the options on the submissions."""
+        # Check if the user has rights to manage the Sword client
+        auth_code, auth_message = acc_authorize_action(
+            req,
+            "run_sword_client"
+        )
         if auth_code != 0:
-            return page_not_authorized(req=req, referer='/bibsword',
-                                       text=auth_message, navtrail='')
-
-
-        user_info = collect_user_info(req)
-
-        #Build contributor tuples {name, email and affiliation(s)}
-        contributors = []
-        contributor_id = 0
-        affiliation_id = 0
-        for name in argd['contributor_name']:
-            contributor = {}
-            contributor['name'] = name
-            contributor['email'] = argd['contributor_email'][contributor_id]
-            contributor['affiliation'] = []
-            is_last_affiliation = False
-            while is_last_affiliation == False and \
-                  affiliation_id < len(argd['contributor_affiliation']):
-                if argd['contributor_affiliation'][affiliation_id] == 'next':
-                    is_last_affiliation = True
-                elif argd['contributor_affiliation'][affiliation_id] != '':
-                    contributor['affiliation'].append(\
-                        argd['contributor_affiliation'][affiliation_id])
-                affiliation_id += 1
-            contributors.append(contributor)
-            contributor_id += 1
-        argd['contributors'] = contributors
-
-
-        # get the uploaded file(s) (if there is one)
-        for key, formfields in form.items():
-            if key == "new_media" and hasattr(formfields, "filename") and formfields.filename:
-                filename = formfields.filename
-                fp = open(os.path.join(CFG_TMPDIR, filename), "w")
-                fp.write(formfields.file.read())
-                fp.close()
-                argd['media'].append(os.path.join(CFG_TMPDIR, filename))
-                argd['filename'] = os.path.join(CFG_TMPDIR, filename)
-
-        # Prepare navtrail
-        navtrail = '''<a class="navtrail" ''' \
-                   '''href="%(CFG_SITE_URL)s/help/admin">Admin Area</a>''' \
-                   % {'CFG_SITE_URL': CFG_SITE_URL}
-
-        title = _("BibSword Admin Interface")
-
-        #***********************************************************************
-        #  Display admin main page
-        #***********************************************************************
-
-        if argd['status'] == '' and argd['recid'] != '' and argd['id_remote_server'] != '':
-            remote_servers = list_remote_servers(argd['id_remote_server'])
-            if len(remote_servers) == 0:
-                error_messages.append("No corresponding remote server could be found")
-                (body, errors, warnings) = perform_display_server_list(
-                                                          error_messages,
-                                                          argd['id_record'])
-            else:
-                title = _("Export with BibSword: Step 2/4")
-                navtrail += ''' &gt; <a class="navtrail" ''' \
-                            '''href="%(CFG_SITE_URL)s/bibsword">''' \
-                            '''SWORD Interface</a>''' % \
-                            {'CFG_SITE_URL' : CFG_SITE_URL}
-                (body, errors, warnings) = perform_display_collection_list(
-                                                       argd['id_remote_server'],
-                                                       argd['id_record'],
-                                                       argd['recid'],
-                                                       error_messages)
-
-        elif argd['status'] == '' or argd['submit'] == "Cancel":
-            (body, errors, warnings) = perform_display_sub_status()
-
-        elif argd['status'] == 'display_submission':
-
-            if argd['submit'] == 'Refresh all':
-                (body, errors, warnings) = \
-                    perform_display_sub_status(1, argd['offset'], "refresh_all")
-
-            elif argd['submit'] == 'Select':
-                first_row = 1
-                (body, errors, warnings) = \
-                    perform_display_sub_status(first_row, argd['offset'])
-
-            elif argd['submit'] == 'Next':
-                first_row = int(argd['last_row']) + 1
-                (body, errors, warnings) = \
-                    perform_display_sub_status(first_row, argd['offset'])
-
-            elif argd['submit'] == 'Prev':
-                first_row = int(argd['first_row']) - int(argd['offset'])
-                (body, errors, warnings) = \
-                    perform_display_sub_status(first_row, argd['offset'])
-
-            elif argd['submit'] == 'First':
-                (body, errors, warnings) = \
-                    perform_display_sub_status(1, argd['offset'])
-
-            elif argd['submit'] == 'Last':
-                first_row = int(argd['total_rows']) - int(argd['offset']) + 1
-                (body, errors, warnings) = \
-                    perform_display_sub_status(first_row, argd['offset'])
-
-
-        #***********************************************************************
-        #  Select remote server
-        #***********************************************************************
-
-            # when the user validated the metadata, display
-            elif argd['submit'] == 'New submission':
-                title = _("Export with BibSword: Step 1/4")
-                navtrail += ''' &gt; <a class="navtrail" ''' \
-                            '''href="%(CFG_SITE_URL)s/bibsword">''' \
-                            '''SWORD Interface</a>''' % \
-                            {'CFG_SITE_URL' : CFG_SITE_URL}
-
-                (body, errors, warnings) = \
-                    perform_display_server_list(error_messages)
-
-        # check if the user has selected a remote server
-        elif argd['status'] == 'select_server':
-            title = _("Export with BibSword: Step 1/4")
-            navtrail += ''' &gt; <a class="navtrail" ''' \
-                        '''href="%(CFG_SITE_URL)s/bibsword">''' \
-                        '''SWORD Interface</a>''' % \
-                        {'CFG_SITE_URL' : CFG_SITE_URL}
-
-            # check if given id_record exist and convert it in recid
-            if argd['recid'] != 0:
-                report_numbers = get_fieldvalues(argd['recid'], CFG_MARC_REPORT_NUMBER)
-                report_numbers.extend(get_fieldvalues(argd['recid'], CFG_MARC_ADDITIONAL_REPORT_NUMBER))
-                if report_numbers:
-                    argd['id_record'] = report_numbers[0]
-
-            elif argd['id_record'] == '':
-                error_messages.append("You must specify a report number")
-
-            else:
-                recids = \
-                    get_existing_records_for_reportnumber(argd['id_record'])
-                if len(recids) == 0:
-                    error_messages.append(\
-                        "No document found with the given report number")
-                elif len(recids) > 1:
-                    error_messages.append(\
-                    "Several documents have been found with given the report number")
-                else:
-                    argd['recid'] = recids[0]
-
-            if argd['id_remote_server'] in ['0', '']:
-                error_messages.append("No remote server was selected")
-
-            if not argd['id_remote_server'] in ['0', '']:
-                # get the server's name and host
-                remote_servers = list_remote_servers(argd['id_remote_server'])
-                if len(remote_servers) == 0:
-                    error_messages.append("No corresponding remote server could be found")
-                    argd['id_remote_server'] = '0'
-
-            if argd['id_remote_server'] in ['0', ''] or argd['recid'] == 0:
-                (body, errors, warnings) = perform_display_server_list(
-                                                          error_messages,
-                                                          argd['id_record'])
-
-            else:
-                title = _("Export with BibSword: Step 2/4")
-                (body, errors, warnings) = perform_display_collection_list(
-                                                       argd['id_remote_server'],
-                                                       argd['id_record'],
-                                                       argd['recid'],
-                                                       error_messages)
-
-
-        #***********************************************************************
-        #  Select collection
-        #***********************************************************************
-
-        # check if the user wants to change the remote server
-        elif argd['submit'] == 'Modify server':
-            title = _("Export with BibSword: Step 1/4")
-            navtrail += ''' &gt; <a class="navtrail" ''' \
-                        '''href="%(CFG_SITE_URL)s/bibsword">''' \
-                        '''SWORD Interface</a>''' % \
-                        {'CFG_SITE_URL' : CFG_SITE_URL}
-            (body, errors, warnings) = \
-                perform_display_server_list(error_messages, argd['id_record'])
-
-        # check if the user has selected a collection
-        elif argd['status'] == 'select_collection':
-            title = _("Export with BibSword: Step 2/4")
-            navtrail += ''' &gt; <a class="navtrail" ''' \
-                        '''href="%(CFG_SITE_URL)s/bibsword">''' \
-                        '''SWORD Interface</a>''' % \
-                        {'CFG_SITE_URL': CFG_SITE_URL}
-            if argd['id_collection'] == '0':
-                error_messages.append("No collection was selected")
-                (body, errors, warnings) = perform_display_collection_list(
-                                                       argd['id_remote_server'],
-                                                       argd['id_record'],
-                                                       argd['recid'],
-                                                       error_messages)
-
-            else:
-                title = _("Export with BibSword: Step 3/4")
-                (body, errors, warnings) = perform_display_category_list(
-                                                       argd['id_remote_server'],
-                                                       argd['id_collection'],
-                                                       argd['id_record'],
-                                                       argd['recid'],
-                                                       error_messages)
-
-
-        #***********************************************************************
-        #  Select primary
-        #***********************************************************************
-
-        # check if the user wants to change the collection
-        elif argd['submit'] == 'Modify collection':
-            title = _("Export with BibSword: Step 2/4")
-            navtrail += ''' &gt; <a class="navtrail" ''' \
-                        '''href="%(CFG_SITE_URL)s/bibsword">''' \
-                        '''SWORD Interface</a>''' % \
-                        {'CFG_SITE_URL': CFG_SITE_URL}
-            (body, errors, warnings) = perform_display_collection_list(
-                                                       argd['id_remote_server'],
-                                                       argd['id_record'],
-                                                       argd['recid'],
-                                                       error_messages)
-
-        # check if the user has selected a primary category
-        elif argd['status']  == 'select_primary_category':
-            title = _("Export with BibSword: Step 3/4")
-            navtrail += ''' &gt; <a class="navtrail" ''' \
-                        '''href="%(CFG_SITE_URL)s/bibsword">''' \
-                        '''SWORD Interface</a>''' % \
-                        {'CFG_SITE_URL' : CFG_SITE_URL}
-            if argd['id_primary'] == '0':
-                error_messages.append("No primary category selected")
-                (body, errors, warnings) = perform_display_category_list(
-                                                       argd['id_remote_server'],
-                                                       argd['id_collection'],
-                                                       argd['id_record'],
-                                                       argd['recid'],
-                                                       error_messages)
-
-            else:
-                title = _("Export with BibSword: Step 4/4")
-                (body, errors, warnings) = perform_display_metadata(user_info,
-                                                  str(argd['id_remote_server']),
-                                                  str(argd['id_collection']),
-                                                  str(argd['id_primary']),
-                                                  argd['id_categories'],
-                                                  argd['id_record'],
-                                                  argd['recid'],
-                                                  error_messages)
-
-        #***********************************************************************
-        #  Check record media and metadata
-        #***********************************************************************
-
-        # check if the user wants to change the collection
-        elif argd['submit'] == 'Modify destination':
-            title = _("Export with BibSword: Step 3/4")
-            navtrail += ''' &gt; <a class="navtrail" ''' \
-                        '''href="%(CFG_SITE_URL)s/bibsword">''' \
-                        '''SWORD Interface</a>''' % \
-                        {'CFG_SITE_URL' : CFG_SITE_URL}
-            (body, errors, warnings) = perform_display_category_list(
-                                                       argd['id_remote_server'],
-                                                       argd['id_collection'],
-                                                       argd['id_record'],
-                                                       argd['recid'],
-                                                       error_messages)
-
-
-        # check if the metadata are complet and well-formed
-        elif argd['status']  == 'check_submission':
-            title = _("Export with BibSword: Step 4/4")
-            navtrail += ''' &gt; <a class="navtrail" ''' \
-                        '''href="%(CFG_SITE_URL)s/bibsword">''' \
-                        '''SWORD Interface</a>''' % \
-                        {'CFG_SITE_URL' : CFG_SITE_URL}
-
-            if argd['submit'] == "Upload":
-                error_messages.append("Media loaded")
-
-            if argd['id'] == '':
-                error_messages.append("Id is missing")
-
-            if argd['title'] == '':
-                error_messages.append("Title is missing")
-
-            if argd['summary'] == '':
-                error_messages.append("summary is missing")
-            elif len(argd['summary']) < 25:
-                error_messages.append("summary must have at least 25 character")
-
-            if argd['author_name'] == '':
-                error_messages.append("No submitter name specified")
-
-            if argd['author_email'] == '':
-                error_messages.append("No submitter email specified")
-
-            if len(argd['contributors']) == 0:
-                error_messages.append("No author specified")
-
-            if len(error_messages) > 0:
-
-                (body, errors, warnings) = perform_display_metadata(user_info,
-                                                  str(argd['id_remote_server']),
-                                                  str(argd['id_collection']),
-                                                  str(argd['id_primary']),
-                                                  argd['id_categories'],
-                                                  argd['id_record'],
-                                                  argd['recid'],
-                                                  error_messages,
-                                                  argd)
-
-
-
-            else:
-
-                title = _("Export with BibSword: Acknowledgement")
-
-                navtrail += ''' &gt; <a class="navtrail" ''' \
-                        '''href="%(CFG_SITE_URL)s/bibsword">''' \
-                        '''SWORD Interface</a>''' % \
-                        {'CFG_SITE_URL' : CFG_SITE_URL}
-
-                (body, errors, warnings) = perform_submit_record(user_info,
-                                                 str(argd['id_remote_server']),
-                                                 str(argd['id_collection']),
-                                                 str(argd['id_primary']),
-                                                 argd['id_categories'],
-                                                 argd['recid'],
-                                                 argd)
-
-
-        # return of all the updated informations to be display
-        return page(title        = title,
-                    body         = body,
-                    navtrail     = navtrail,
-                    #uid         = uid,
-                    lastupdated  = __lastupdated__,
-                    req          = req,
-                    language     = argd['ln'],
-                    #errors       = errors,
-                    warnings     = warnings,
-                    navmenuid    = "yourmessages")
-
-
-    def remoteserverinfos(self, req, form):
-        '''
-            This method handle the /bibsword/remoteserverinfos call
-        '''
+            return page_not_authorized(
+                req=req,
+                referer="/sword_client",
+                text=auth_message,
+                navtrail=""
+            )
 
         argd = wash_urlargd(form, {
-            'ln' : (str, ''),
-            'id' : (str, '')
+            "option": (str, ""),
+            "action": (str, "submit"),
+            "server_id": (int, 0),
+            "status_url": (str, ""),
+            "ln": (str, CFG_SITE_LANG),
         })
 
-        #authentication
-        (auth_code, auth_message) = self.check_credential(req)
+        if argd["option"] in ("update",):
+            option = argd["option"]
+        else:
+            option = ""
+
+        if argd["action"] in ("submit",):
+            action = argd["action"]
+        else:
+            action = ""
+
+        server_id = argd["server_id"]
+        status_url = argd["status_url"]
+        ln = argd["ln"]
+
+        (error, result) = sword_client.perform_request_submission_options(
+            option,
+            action,
+            server_id,
+            status_url,
+            ln
+        )
+
+        if error:
+            req.set_content_type("text/plain; charset=utf-8")
+            req.set_status("400")
+            req.send_http_header()
+            req.write("Error: {0}".format(error))
+            return
+
+        return result
+
+    def servers(self, req, form):
+        """Web interface for the available servers."""
+        # Check if the user has rights to manage the Sword client
+        auth_code, auth_message = acc_authorize_action(
+            req,
+            "manage_sword_client"
+        )
         if auth_code != 0:
-            return page_not_authorized(req=req, referer='/bibsword',
-                                       text=auth_message, navtrail='')
+            return page_not_authorized(
+                req=req,
+                referer="/sword_client/",
+                text=auth_message,
+                navtrail=""
+            )
 
+        argd = wash_urlargd(form, {
+            "ln": (str, CFG_SITE_LANG),
+        })
 
-        body = perform_display_server_infos(argd['id'])
+        # Get the user ID
+        uid = getUid(req)
 
-        navtrail = ''' &gt; <a class="navtrail" ''' \
-                        '''href="%(CFG_SITE_URL)s/bibsword">''' \
-                        '''SWORD Interface</a>''' % \
-                        {'CFG_SITE_URL' : CFG_SITE_URL}
+        # Set language for i18n text auto generation
+        ln = argd["ln"]
+        _ = gettext_set_language(ln)
 
+        body = sword_client.perform_request_servers(
+            ln
+        )
 
-        # return of all the updated informations to be display
-        return page(title        = 'Remote server infos',
-                    body         = body,
-                    navtrail     = navtrail,
-                    #uid         = uid,
-                    lastupdated  = __lastupdated__,
-                    req          = req,
-                    language     = argd['ln'],
-                    errors       = '',
-                    warnings     = '',
-                    navmenuid    = "yourmessages")
+        navtrail = """
+&gt; <a class="navtrail" href="%(CFG_SITE_URL)s/sword_client">%(label)s</a>
+""" % {
+            'CFG_SITE_URL': CFG_SITE_URL,
+            'label': _("Sword Client"),
+        }
 
+        return page(
+            title=_("Servers"),
+            body=body,
+            navtrail=navtrail,
+            lastupdated=__lastupdated__,
+            req=req,
+            language=ln
+        )
 
-    def check_credential(self, req):
-        '''
-            This method check if the user has the right to get into this
-            function
-        '''
+    def server_options(self, req, form):
+        """Web interface for the options on the available servers."""
+        # Check if the user has rights to manage the Sword client
+        auth_code, auth_message = acc_authorize_action(
+            req,
+            "manage_sword_client"
+        )
+        if auth_code != 0:
+            return page_not_authorized(
+                req=req,
+                referer="/sword_client",
+                text=auth_message,
+                navtrail=""
+            )
 
-        auth_code, auth_message = acc_authorize_action(req, 'runbibswordclient')
-        return (auth_code, auth_message)
+        argd = wash_urlargd(form, {
+            "option": (str, ""),
+            "action": (str, "submit"),
+            "server_id": (int, 0),
+            "sword_client_server_name": (str, ""),
+            "sword_client_server_engine": (str, ""),
+            "sword_client_server_username": (str, ""),
+            "sword_client_server_password": (str, ""),
+            "sword_client_server_email": (str, ""),
+            "sword_client_server_update_frequency": (str, ""),
+            "ln": (str, CFG_SITE_LANG),
+        })
 
+        if argd["option"] in ("add", "update", "modify", "delete"):
+            option = argd["option"]
+        else:
+            option = ""
 
-    index = __call__
+        if argd["action"] in ("prepare", "submit"):
+            action = argd["action"]
+        else:
+            action = ""
 
+        server_id = argd["server_id"]
 
+        server = (
+            argd["sword_client_server_name"],
+            argd["sword_client_server_engine"],
+            argd["sword_client_server_username"],
+            argd["sword_client_server_password"],
+            argd["sword_client_server_email"],
+            argd["sword_client_server_update_frequency"],
+        )
+
+        ln = argd["ln"]
+
+        (error, result) = sword_client.perform_request_server_options(
+            option,
+            action,
+            server_id,
+            server,
+            ln
+        )
+
+        if error:
+            req.set_content_type("text/plain; charset=utf-8")
+            req.set_status("400")
+            req.send_http_header()
+            req.write("Error: {0}".format(error))
+            return
+
+        return result
+
+    def submit(self, req, form):
+        """Submit a record using SWORD."""
+        # Check if the user has rights to manage the Sword client
+        auth_code, auth_message = acc_authorize_action(
+            req,
+            "run_sword_client"
+        )
+        if auth_code != 0:
+            return page_not_authorized(
+                req=req,
+                referer="/sword_client",
+                text=auth_message,
+                navtrail=""
+            )
+
+        argd = wash_urlargd(form, {
+            "record_id": (int, 0),
+            "server_id": (int, 0),
+            "ln": (str, CFG_SITE_LANG),
+        })
+
+        # Get the user ID
+        uid = getUid(req)
+
+        # Set language for i18n text auto generation
+        ln = argd["ln"]
+        _ = gettext_set_language(ln)
+
+        record_id = argd["record_id"]
+        server_id = argd["server_id"]
+
+        body = sword_client.perform_submit(
+            uid,
+            record_id,
+            server_id,
+            ln
+        )
+
+        navtrail = """
+&gt; <a class="navtrail" href="%(CFG_SITE_URL)s/sword_client">%(label)s</a>
+""" % {
+            'CFG_SITE_URL': CFG_SITE_URL,
+            'label': _("Sword Client"),
+        }
+
+        return page(
+            title=_("Submit"),
+            body=body,
+            navtrail=navtrail,
+            lastupdated=__lastupdated__,
+            req=req,
+            language=ln
+        )
+
+    def submit_step_1(self, req, form):
+        """Process step 1 in the submission workflow."""
+        # Check if the user has adequate rights to run the bibsword client
+        # TODO: in a more advanced model, also check if the give user has
+        #       rights to the current submission based on the user id and the
+        #       submission id. It would get even more complicated if we
+        #       introduced people that can approve specific submissions etc.
+        auth_code, auth_message = acc_authorize_action(
+            req,
+            "run_sword_client"
+        )
+        if auth_code != 0:
+            return page_not_authorized(
+                req=req,
+                referer="/sword_client",
+                text=auth_message,
+                navtrail=""
+            )
+
+        argd = wash_urlargd(form, {
+            'sid': (str, ''),
+            'server_id': (int, 0),
+            'ln': (str, CFG_SITE_LANG),
+        })
+
+        sid = argd['sid']
+        server_id = argd['server_id']
+        ln = argd['ln']
+
+        return sword_client.perform_submit_step_1(
+            sid,
+            server_id,
+            ln
+        )
+
+    def submit_step_2(self, req, form):
+        """Process step 2 in the submission workflow."""
+        # Check if the user has adequate rights to run the bibsword client
+        # TODO: in a more advanced model, also check if the give user has
+        #       rights to the current submission based on the user id and the
+        #       submission id. It would get even more complicated if we
+        #       introduced people that can approve specific submissions etc.
+        auth_code, auth_message = acc_authorize_action(
+            req,
+            "run_sword_client"
+        )
+        if auth_code != 0:
+            return page_not_authorized(
+                req=req,
+                referer="/sword_client",
+                text=auth_message,
+                navtrail=""
+            )
+
+        argd = wash_urlargd(form, {
+            'sid': (str, ""),
+            'collection_url': (str, ""),
+            'ln': (str, CFG_SITE_LANG),
+        })
+
+        sid = argd['sid']
+        collection_url = argd['collection_url']
+        ln = argd['ln']
+
+        return sword_client.perform_submit_step_2(
+            sid,
+            collection_url,
+            ln
+        )
+
+    def submit_step_3(self, req, form):
+        """Process step 3 in the submission workflow."""
+        # Check if the user has adequate rights to run the bibsword client
+        # TODO: in a more advanced model, also check if the give user has
+        #       rights to the current submission based on the user id and the
+        #       submission id. It would get even more complicated if we
+        #       introduced people that can approve specific submissions etc.
+        auth_code, auth_message = acc_authorize_action(
+            req,
+            "run_sword_client"
+        )
+        if auth_code != 0:
+            return page_not_authorized(
+                req=req,
+                referer="/sword_client",
+                text=auth_message,
+                navtrail=""
+            )
+
+        argd = wash_urlargd(form, {
+            'sid': (str, ""),
+            'mandatory_category_url': (str, ""),
+            'optional_categories_urls': (list, []),
+            'ln': (str, CFG_SITE_LANG),
+        })
+
+        sid = argd['sid']
+        ln = argd['ln']
+        mandatory_category_url = argd['mandatory_category_url']
+        optional_categories_urls = argd['optional_categories_urls']
+
+        return sword_client.perform_submit_step_3(
+            sid,
+            mandatory_category_url,
+            optional_categories_urls,
+            ln
+        )
+
+    def submit_step_4(self, req, form):
+        """Process step 4 in the submission workflow."""
+        # Check if the user has adequate rights to run the bibsword client
+        # TODO: in a more advanced model, also check if the give user has
+        #       rights to the current submission based on the user id and the
+        #       submission id. It would get even more complicated if we
+        #       introduced people that can approve specific submissions etc.
+        auth_code, auth_message = acc_authorize_action(
+            req,
+            "run_sword_client"
+        )
+        if auth_code != 0:
+            return page_not_authorized(
+                req=req,
+                referer="/sword_client",
+                text=auth_message,
+                navtrail=""
+            )
+
+        argd = wash_urlargd(form, {
+            "sid": (str, ""),
+            "rn": (str, ""),
+            "additional_rn": (list, []),
+            "title": (str, ""),
+            "author_fullname": (str, ""),
+            "author_email": (str, ""),
+            "author_affiliation": (str, ""),
+            "abstract": (str, ""),
+            "contributor_fullname": (list, []),
+            "contributor_email": (list, []),
+            "contributor_affiliation": (list, []),
+            "files": (list, []),
+            "ln": (str, CFG_SITE_LANG),
+        })
+
+        sid = argd["sid"]
+        rn = argd["rn"]
+        additional_rn = argd["additional_rn"]
+        title = argd["title"]
+        author_fullname = argd["author_fullname"]
+        author_email = argd["author_email"]
+        author_affiliation = argd["author_affiliation"]
+        abstract = argd["abstract"]
+        contributor_fullname = argd["contributor_fullname"]
+        contributor_email = argd["contributor_email"]
+        contributor_affiliation = argd["contributor_affiliation"]
+        files_indexes = argd["files"]
+        ln = argd["ln"]
+
+        return sword_client.perform_submit_step_4(
+            sid,
+            (
+                rn,
+                additional_rn,
+                title,
+                author_fullname,
+                author_email,
+                author_affiliation,
+                abstract,
+                contributor_fullname,
+                contributor_email,
+                contributor_affiliation,
+                files_indexes
+            ),
+            ln
+        )
+
+    index = submissions

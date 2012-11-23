@@ -1,5 +1,7 @@
+# -*- coding: utf-8 -*-
+#
 # This file is part of Invenio.
-# Copyright (C) 2010, 2011 CERN.
+# Copyright (C) 2010, 2011, 2012, 2013, 2014, 2015, 2016 CERN.
 #
 # Invenio is free software; you can redistribute it and/or
 # modify it under the terms of the GNU General Public License as
@@ -15,1697 +17,1740 @@
 # along with Invenio; if not, write to the Free Software Foundation, Inc.,
 # 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA.
 
-'''
-BibSWORD Client Engine
-'''
-import getopt
-import sys
-import datetime
-import time
-import StringIO
-from tempfile import NamedTemporaryFile
-from invenio.bibsword_config import CFG_SUBMISSION_STATUS_SUBMITTED, \
-                                    CFG_SUBMISSION_STATUS_REMOVED, \
-                                    CFG_SUBMISSION_STATUS_PUBLISHED, \
-                                    CFG_BIBSWORD_SERVICEDOCUMENT_UPDATE_TIME
-from invenio.bibsword_client_http import RemoteSwordServer
-from invenio.bibsword_client_formatter import format_remote_server_infos, \
-                                              format_remote_collection, \
-                                              format_collection_informations, \
-                                              format_primary_categories, \
-                                              format_secondary_categories, \
-                                              get_media_from_recid, \
-                                              get_medias_to_submit, \
-                                              format_file_to_zip_archiv, \
-                                              format_marcxml_file, \
-                                              format_link_from_result, \
-                                              get_report_number_from_macrxml, \
-                                              format_links_from_submission, \
-                                              format_id_from_submission, \
-                                              update_marcxml_with_remote_id, \
-                                              ArXivFormat, \
-                                              format_submission_status, \
-                                              format_author_from_marcxml, \
-                                              upload_fulltext, \
-                                              update_marcxml_with_info
-from invenio.bibsword_client_dblayer import get_all_remote_server, \
-                                            get_last_update, \
-                                            update_servicedocument, \
-                                            select_servicedocument, \
-                                            get_remote_server_auth, \
-                                            is_record_sent_to_server, \
-                                            select_submitted_record_infos, \
-                                            update_submission_status, \
-                                            insert_into_swr_clientdata, \
-                                            count_nb_submitted_record, \
-                                            select_remote_server_infos
-from invenio.bibformat import record_get_xml
-from invenio.bibsword_client_templates import BibSwordTemplate
-from invenio.config import CFG_TMPDIR, CFG_SITE_ADMIN_EMAIL
+"""
+BibSWORD Client Library.
+"""
 
-#-------------------------------------------------------------------------------
-# Implementation of the BibSword API
-#-------------------------------------------------------------------------------
+import cPickle
+import json
+import os
+import random
+import re
 
-def list_remote_servers(id_server=''):
-    '''
-        Get the list of remote servers implemented by the Invenio SWORD API.
-        @return: list of tuples [ { 'id', 'name' } ]
-    '''
+from invenio.bibdocfile import BibRecDocs
+from invenio.bibsword_config import(
+    CFG_BIBSWORD_CLIENT_SERVERS_PATH,
+    CFG_BIBSWORD_LOCAL_TIMEZONE,
+    CFG_BIBSWORD_MARC_FIELDS,
+    CFG_BIBSWORD_MAXIMUM_NUMBER_OF_CONTRIBUTORS,
+    CFG_BIBSWORD_UPDATED_DATE_MYSQL_FORMAT
+)
+import invenio.bibsword_client_dblayer as sword_client_db
+from invenio.bibsword_client_templates import TemplateSwordClient
+from invenio.config import CFG_PYLIBDIR
+from invenio.errorlib import raise_exception
+from invenio.messages import gettext_set_language
+from invenio.pluginutils import PluginContainer
+from invenio.search_engine import(
+    get_modification_date,
+    get_record,
+    record_exists
+)
 
-    return get_all_remote_server(id_server)
+sword_client_template = TemplateSwordClient()
+
+RANDOM_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+RANDOM_RANGE = range(32)
+
+_CLIENT_SERVERS = PluginContainer(
+    os.path.join(
+        CFG_PYLIBDIR,
+        'invenio',
+        CFG_BIBSWORD_CLIENT_SERVERS_PATH,
+        '*.py'
+    )
+)
 
 
-def list_server_info(id_server):
-    '''
-        Get all informations about the server's options such as SWORD version,
-        maxUploadSize, ... These informations are found in the servicedocument of
-        the given server.
-        @param id_server: #id of the server in the table swrREMOTESERVER
-        @return: tuple { 'version', 'maxUploadSize', 'verbose', 'noOp' }
-    '''
+class BibSwordSubmission(object):
+    """The BibSwordSubmission class."""
 
-    service = get_servicedocument(id_server)
-    return format_remote_server_infos(service)
+    def __init__(
+        self,
+        recid,
+        uid,
+        sid=None
+    ):
+        """
+        The constructor. Assign the given
+        or a unique temporary submission id.
+        """
 
+        self._set_recid_and_record(recid)
+        self._set_sid(sid)
+        self._set_uid(uid)
 
-def list_collections_from_server(id_server):
-    '''
-        List all the collections found in the servicedocument of the given server.
-        @param id_server: #id of the server in the table swrRMOTESERVER
-        @return: list of information's tuples [ { 'id', 'label', 'url' } ]
-    '''
+    def _set_uid(self, uid):
+        self._uid = uid
 
-    service = get_servicedocument(id_server)
-    if service == '':
-        return ''
-    return format_remote_collection(service)
+    def get_uid(self):
+        return self._uid
 
+    def get_sid(self):
+        return self._sid
 
-def list_collection_informations(id_server, id_collection):
-    '''
-        List all information concerning the collection such as the list of
-        accepted type of media, if the collection allows mediation, if the
-        collection accept packaging, ...
-        @param id_server: #id of the server in the table swrRMOTESERVER
-        @param id_collection: id of the collection found in collection listing
-        @return: information's tuple: {[accept], 'collectionPolicy', 'mediation',
-                                                  'treatment', 'acceptPackaging'}
-    '''
-
-    service = get_servicedocument(id_server)
-    if service == '':
-        return ''
-    return format_collection_informations(service, id_collection)
-
-
-def list_mandated_categories(id_server, id_collection):
-    '''
-        The mandated categories are the categories that must be specified to the
-        remote server's collection.
-        In some SWORD implementation, they are not used but in some they do.
-        @param id_server: #id of the server in the table swrRMOTESERVER
-        @param id_collection: id of the collection found by listing them
-        @return: list of category's tuples [ { 'id', 'label', 'url' } ]
-    '''
-
-    service = get_servicedocument(id_server)
-    if service == '':
-        return ''
-    return format_primary_categories(service, id_collection)
-
-
-def list_optional_categories(id_server, id_collection):
-    '''
-        The optional categories are only used as search option to retrieve the
-        resource.
-        @param id_server: #id of the server in the table swrRMOTESERVER
-        @param id_collection: id of the collection found by listing them
-        @return: list of category's tuples [ { 'id', 'label', 'url' } ]
-    '''
-
-    service = get_servicedocument(id_server)
-    if service == '':
-        return ''
-    return format_secondary_categories(service, id_collection)
-
-
-def list_submitted_resources(first_row, offset, action="submitted"):
-    '''
-        List the swrCLIENTDATA table informations such as submitter, date of submission,
-        link to the resource and status of the submission.
-        It is possible to limit the amount of result by specifing a remote server,
-        the id of the bibRecord or both
-        @return: list of submission's tuple [ { 'id', 'links', 'type, 'submiter',
-                                                              'date', 'status'} ]
-    '''
-
-    #get all submission from the database
-    if action == 'submitted':
-        submissions = select_submitted_record_infos(first_row, offset)
-    else:
-        nb_submission = count_nb_submitted_record()
-        submissions = select_submitted_record_infos(0, nb_submission)
-
-    authentication_info = get_remote_server_auth(1)
-    connection = RemoteSwordServer(authentication_info)
-
-    #retrieve the status of all submission and update it if necessary
-    for submission in submissions:
-        if action == 'submitted' and submission['status'] != \
-            CFG_SUBMISSION_STATUS_SUBMITTED:
-            continue
-        status_xml = connection.get_submission_status(submission['link_status'])
-        if status_xml != '':
-            status = format_submission_status(status_xml)
-            if status['status'] != submission['status']:
-                update_submission_status(submission['id'],
-                                         status['status'],
-                                         status['id_submission'])
-
-                if status['status'] == CFG_SUBMISSION_STATUS_PUBLISHED:
-                    update_marcxml_with_remote_id(submission['id_record'],
-                                                  submission['id_remote'])
-                if status['status'] == CFG_SUBMISSION_STATUS_REMOVED:
-                    update_marcxml_with_remote_id(submission['id_record'],
-                                                  submission['id_remote'],
-                                                  "delete")
-                    update_marcxml_with_info(submission['id_record'],
-                                             submission['user_name'],
-                                             submission['submission_date'],
-                                             submission['id_remote'], "delete")
-
-    return select_submitted_record_infos(first_row, offset)
-
-
-def get_marcxml_from_record(recid):
-    '''
-        Return a string containing the metadata in the format of a marcxml file.
-        The marcxml is retreived by using the given record id.
-        @param recid: id of the record to be retreive on the database
-        @return: string containing the marcxml file of the record
-    '''
-
-    return record_get_xml(recid)
-
-
-def get_media_list(recid, selected_medias=None):
-    '''
-        Parse the marcxml file to retrieve the link toward the media. Get every
-        media through its URL and set each of them and their type in a list of
-        tuple.
-        @param recid: recid of the record to consider
-        @return: list of tuples: [ { 'link', 'type', 'file' } ]
-    '''
-
-    if selected_medias == None:
-        selected_medias = []
-
-    medias = get_media_from_recid(recid)
-
-    for media in medias:
-        for selected_media in selected_medias:
-            if selected_media == media['path']:
-                media['selected'] = 'checked="yes"'
-                selected_medias.remove(selected_media)
-                break
-
-
-    for selected_media in selected_medias:
-
-        media = {}
-        media['path'] = selected_media
-        media['file'] = open(selected_media, 'r').read()
-        media['size'] = str(len(media['file']))
-
-        if selected_media.endswith('pdf'):
-            media['type'] = 'application/pdf'
-        elif selected_media.endswith('zip'):
-            media['type'] = 'application/zip'
-        elif selected_media.endswith('tar'):
-            media['type'] = 'application/tar'
-        elif selected_media.endswith('docx'):
-            media['type'] = 'application/docx'
-        elif selected_media.endswith('pdf'):
-            media['type'] = 'application/pdf'
+    def _set_sid(self, sid=None):
+        if sid is None:
+            self._sid = self._get_random_id()
         else:
-            media['type'] = ''
-
-        media['loaded'] = True
-        media['selected'] = 'checked="yes"'
-        medias.append(media)
-
-    return medias
-
-
-def compress_media_file(media_file_list):
-    '''
-        Compress each file of the given list in a single zipped archive and return
-        this archive in a new media file list containing only one tuple.
-        @param media_file_list: list of tuple [ { 'type', 'file' } ]
-        @return: list containing only one tuple { 'type=zip', 'file=archive' }
-    '''
-
-    filelist = []
-
-
-
-    return format_file_to_zip_archiv(filelist)
-
-
-def deposit_media(server_id, media, deposit_url, username='',
-                  email=''):
-    '''
-        Deposit all media containing in the given list in the deposit_url (usually
-        the url of the selected collection. A user name and password could be
-        selected if the submission is made 'on behalf of' an author
-        @param server_id: id of the remote server to deposit media
-        @param media: list of tuple [ { 'type', 'file' } ]
-        @param deposit_url: url of the deposition on the internet
-        @param username: name of the user depositing 'on behalf of' an author
-        @param email: allow user to get an acknowledgement of the deposit
-        @return: list of xml result file (could'd be sword error xml file)
-    '''
-
-    response = {'result': [], 'error': ''}
-
-    authentication_info = get_remote_server_auth(server_id)
-
-    if authentication_info['error'] != '':
-        return authentication_info['error']
-
-    connection = RemoteSwordServer(authentication_info)
-    if username != '' and email != '':
-        onbehalf = '''"%s" <%s>''' % (username, email)
-    else:
-        onbehalf = ''
-
-    result = connection.deposit_media(media, deposit_url, onbehalf)
-
-    return result
-
-
-def format_metadata(marcxml, deposit_result, user_info, metadata=None):
-    '''
-        Format an xml atom entry containing the metadata for the submission and
-        the list of url where the media have been deposited.
-        @param deposit_result: list of obtained response during deposition
-        @param marcxml: marc file where to find metadata
-        @param metadata: optionaly give other metadata that those from marcxml
-        @return: xml atom entry containing foramtted metadata and links
-    '''
-
-    if metadata == None:
-        metadata = {}
-
-    # retrive all metadata from marcxml file
-    metadata_from_marcxml = format_marcxml_file(marcxml)
-    metadata['error'] = []
-
-
-    #---------------------------------------------------------------------------
-    # get the author name and email of the document (mandatory)
-    #---------------------------------------------------------------------------
-
-    if 'author_name' not in metadata:
-        if 'nickname' not in user_info:
-            metadata['error'].append("No submitter name given !")
-            metadata['author_name'] = ''
-        elif user_info['nickname'] == '':
-            metadata['error'].append("No submitter name given !")
-        else:
-            metadata['author_name'] = user_info['nickname']
-
-    if 'author_email' not in metadata:
-        if 'email' not in user_info:
-            metadata['error'].append("No submitter email given !")
-            metadata['author_email'] = ''
-        elif user_info['email'] == '':
-            metadata['error'].append("No submitter email given !")
-        else:
-            metadata['author_email'] = user_info['email']
-
-
-    #---------------------------------------------------------------------------
-    # get url and label of the primary category of the document (mandatory)
-    #---------------------------------------------------------------------------
-
-    if 'primary_label' not in metadata:
-        metadata['error'].append('No primary category label given !')
-        metadata['primary_label'] = ''
-    elif metadata['primary_label'] == '':
-        metadata['error'].append('No primary category label given !')
-
-    if 'primary_url' not in metadata:
-        metadata['error'].append('No primary category url given !')
-        metadata['primary_url'] = ''
-    elif metadata['primary_url'] == '':
-        metadata['error'].append('No primary category url given !')
-
-
-    #---------------------------------------------------------------------------
-    # get the link to the deposited fulltext of the document (mandatory)
-    #---------------------------------------------------------------------------
-
-    if deposit_result in ([], ''):
-        metadata['error'].append('No links to the media deposit found !')
-        metadata['links'] = []
-    else:
-        metadata['links'] = format_link_from_result(deposit_result)
-
-
-    #---------------------------------------------------------------------------
-    # get the id of the document (mandatory)
-    #---------------------------------------------------------------------------
-
-    if 'id' not in metadata:
-        if 'id' not in metadata_from_marcxml:
-            metadata['error'].append("No document id given !")
-            metadata['id'] = ''
-        elif metadata_from_marcxml['id'] == '':
-            metadata['error'].append("No document id given !")
-            metadata['id'] = ''
-        else:
-            metadata['id'] = metadata_from_marcxml['id']
-    elif metadata['id'] == '':
-        metadata['error'].append("No document id given !")
-
-
-    #---------------------------------------------------------------------------
-    # get the title of the document (mandatory)
-    #---------------------------------------------------------------------------
-
-    if 'title' not in metadata:
-        if 'title' not in metadata_from_marcxml or \
-               not metadata_from_marcxml['title']:
-            metadata['error'].append("No title given !")
-            metadata['title'] = ''
-        else:
-            metadata['title'] = metadata_from_marcxml['title']
-    elif metadata['title'] == '':
-        metadata['error'].append("No title given !")
-
-
-    #---------------------------------------------------------------------------
-    # get the contributors of the document (mandatory)
-    #---------------------------------------------------------------------------
-
-    contributors = []
-    if 'contributors' not in metadata:
-        if 'contributors' not in metadata_from_marcxml:
-            metadata['error'].append('No author given !')
-        elif metadata_from_marcxml['contributors'] == '':
-            metadata['error'].append('No author given !')
-        elif len(metadata_from_marcxml['contributors']) == 0:
-            metadata['error'].append('No author given !')
-
-        else:
-            for contributor in metadata_from_marcxml['contributors']:
-                if contributor != '':
-                    contributors.append(contributor)
-            if len(contributors) == 0:
-                metadata['error'].append('No author given !')
-
-        metadata['contributors'] = contributors
-
-
-    #---------------------------------------------------------------------------
-    # get the summary of the document (mandatory)
-    #---------------------------------------------------------------------------
-
-    if 'summary' not in metadata:
-        if 'summary' not in metadata and \
-               not metadata_from_marcxml['summary']:
-            metadata['error'].append('No summary given !')
-            metadata['summary'] = ""
-        else:
-            metadata['summary'] = metadata_from_marcxml['summary']
-    else:
-        if metadata['summary'] == '':
-            metadata['error'].append(
-                    'No summary given !')
-
-
-    #---------------------------------------------------------------------------
-    # get the url and the label of the categories for the document (mandatory)
-    #---------------------------------------------------------------------------
-
-    if 'categories' not in metadata:
-        metadata['categories'] = []
-
-
-    #---------------------------------------------------------------------------
-    # get the report number of the document (optional)
-    #---------------------------------------------------------------------------
-
-    if 'report_nos' not in metadata:
-        metadata['report_nos'] = []
-        if 'report_nos' in metadata_from_marcxml:
-            for report_no in metadata_from_marcxml['report_nos']:
-                if report_no != '':
-                    metadata['report_nos'].append(report_no)
-
-    if metadata.get('id_record') == '' and len(metadata['report_nos']) > 0:
-        metadata['id_record'] = metadata['report_nos'][0]
-
-
-    #---------------------------------------------------------------------------
-    # get the journal references of the document (optional)
-    #---------------------------------------------------------------------------
-
-    if 'journal_refs' not in metadata:
-        metadata['journal_refs'] = []
-        if 'journal_refs' in metadata_from_marcxml:
-            for journal_ref in metadata_from_marcxml['journal_refs']:
-                if journal_ref != '':
-                    metadata['journal_refs'].append(journal_ref)
-
-
-    #---------------------------------------------------------------------------
-    # get the doi of the document (optional)
-    #---------------------------------------------------------------------------
-
-    if 'doi' not in metadata:
-        if 'doi' not in metadata_from_marcxml:
-            metadata['doi'] = ""
-        else:
-            metadata['doi'] = metadata_from_marcxml['doi']
-
-
-    #---------------------------------------------------------------------------
-    # get the comment of the document (optional)
-    #---------------------------------------------------------------------------
-
-    if 'comment' not in metadata:
-        if 'comment' not in metadata_from_marcxml:
-            metadata['comment'] = ""
-        else:
-            metadata['comment'] = metadata_from_marcxml['comment']
-
-    return metadata
-
-
-def submit_metadata(server_id, deposit_url, metadata, username= '', email=''):
-    '''
-        Submit the given metadata xml entry to the deposit_url. A username and
-        an email address maight be used to proced on behalf of the real author
-        of the document
-        @param metadata: xml atom entry containing every metadata and links
-        @param deposit_url: url of the deposition (usually a collection' url)
-        @param username: name of the user depositing 'on behalf of' an author
-        @param email: allow user to get an acknowledgement of the deposit
-        @return: xml atom entry containing submission acknowledgement or error
-    '''
-
-    if username != '' and email != '':
-        onbehalf = '''"%s" <%s>''' % (username, email)
-    else:
-        onbehalf = ''
-
-    authentication_info = get_remote_server_auth(server_id)
-    connection = RemoteSwordServer(authentication_info)
-
-    tmp_file = open("/tmp/file", "w")
-    tmp_file.write(deposit_url + '\n' + onbehalf)
-
-    return connection.metadata_submission(deposit_url, metadata, onbehalf)
-
-
-def perform_submission_process(server_id, collection, recid, user_info,
-                               metadata=None, medias=None, marcxml=""):
-    '''
-        This function is an abstraction of the 2 steps submission process. It
-        submit the media to a collection, format the metadata and submit them
-        to the same collection. In case of error in one of the 3 operations, it
-        stops the process and send an error message back. In addition, this
-        function insert informations in the swrCLIENTDATA and MARC to avoid sending a
-        record twice in the same remote server
-        @param server_id: remote server id on the swrREMOTESERVER table
-        @param user_info: invenio user infos of the submitter
-        @param metadata: dictionnary containing some informations
-        @param collection: url of the place where to deposit the record
-        @param marcxml: place where to find important information to the record
-        @param recid: id of the record that can be found if no marcxml
-        return: tuple containing deposit informations and submission informations
-    '''
-
-    if metadata == None:
-        metadata = {}
-
-    if medias == None:
-        medias = []
-
-    # dictionnary containing 2 steps response and possible errors
-    response = {'error':'',
-                'message':'',
-                'deposit_media':'',
-                'submit_metadata':'',
-                'row_id': ''}
-
-    # get the marcxml file (if needed)
-    if marcxml == '':
-        if recid == '':
-            response['error'] = 'You must give a marcxml file or a record id'
-            return response
-        marcxml = get_marcxml_from_record(recid)
-
-
-    #***************************************************************************
-    # Check if record was already submitted
-    #***************************************************************************
-
-    # get the record id in the marcxml file
-    record_id = ''
-    record_id = get_report_number_from_macrxml(marcxml)
-    if record_id == '':
-        response['error'] = 'The marcxml file has no record_id'
-        return response
-
-    # check if record already sent to the server
-    if(is_record_sent_to_server(server_id, recid) == True):
-        response['error'] = \
-            'The record was already sent to the specified server'
-        return response
-
-
-    #***************************************************************************
-    # Get informations for a 'on-behalf-of' submission if needed
-    #***************************************************************************
-
-    username = ''
-    email = ''
-    author = format_author_from_marcxml(marcxml)
-
-    if author['name'] == user_info['nickname']:
-        author['email'] = user_info['email']
-    else:
-        username = author['name']
-        email = user_info['email']
-
-
-    #***************************************************************************
-    # Get the media from the marcxml (if not already made)
-    #***************************************************************************
-
-
-    media = get_medias_to_submit(medias)
-    if media == {}:
-        response['error'] = 'No media to submit'
-        return response
-
-    deposit_status = deposit_media(server_id, media, collection, username,
-                                   email)
-
-    # check if any answer was given
-    if deposit_status == '':
-        response['error'] = 'Error during media deposit process'
-        return response
-
-    tmpfd = NamedTemporaryFile(mode='w', suffix='.xml', prefix='bibsword_media_',
-                               dir=CFG_TMPDIR, delete=False)
-    tmpfd.write(deposit_status)
-    tmpfd.close()
-
-
-    #***************************************************************************
-    # format the metadata files
-    #***************************************************************************
-
-    metadata = format_metadata(marcxml, deposit_status, user_info,
-                               metadata)
-
-    arxiv = ArXivFormat()
-    metadata_atom = arxiv.format_metadata(metadata)
-
-
-    #***************************************************************************
-    # submit the metadata
-    #***************************************************************************
-
-    tmpfd = NamedTemporaryFile(mode='w', suffix='.xml', prefix='bibsword_metadata_',
-                               dir=CFG_TMPDIR, delete=False)
-    tmpfd.write(metadata_atom)
-    tmpfd.close()
-
-    submit_status = submit_metadata(server_id, collection, metadata_atom,
-                                    username, email)
-
-    tmpfd = NamedTemporaryFile(mode='w', suffix='.xml', prefix='bibsword_submit_',
-                               dir=CFG_TMPDIR, delete=False)
-    tmpfd.write(submit_status)
-    tmpfd.close()
-
-    # check if any answer was given
-    if submit_status == '':
-        response['message'] = ''
-        response['error'] = 'Problem during submission process'
-        return response
-
-
-    #***************************************************************************
-    # Parse the submit result
-    #***************************************************************************
-
-    # get the submission's remote id from the response
-    remote_id = format_id_from_submission(submit_status)
-    response['remote_id'] = remote_id
-
-    #get links to medias, metadata and status
-    links = format_links_from_submission(submit_status)
-    response['links'] = links
-
-    #insert the submission in the swrCLIENTDATA entry
-    row_id = insert_into_swr_clientdata(server_id,
-                                        recid,
-                                        metadata['id_record'],
-                                        remote_id,
-                                        user_info['id'],
-                                        user_info['nickname'],
-                                        user_info['email'],
-                                        deposit_status,
-                                        submit_status,
-                                        links['media'],
-                                        links['metadata'],
-                                        links['status'])
-
-    #insert information field in the marc file
-    current_date = time.strftime("%Y-%m-%d %H:%M:%S")
-    update_marcxml_with_info(recid, user_info['nickname'], current_date,
-                             remote_id)
-
-    # format and return the response
-    response['submit_metadata'] = submit_status
-    response['row_id'] = row_id
-
-    return response
-
-
-def get_servicedocument(id_server):
-    '''
-        This metode get the xml service document file discribing the collections
-        and the categories of a remote server. If the servicedocument is saved
-        in the swrREMOTESERVER table or if it has not been load since a certain
-        time, it is dynamically loaded from the SWORD remote server.
-        @param id_server: id of the server where to get the servicedocument
-        @return: service document in a String
-    '''
-
-    last_update = get_last_update(id_server)
-
-    time_machine = datetime.datetime.now()
-    time_now = int(time.mktime(time_machine.timetuple()))
-
-    delta_time = time_now - int(last_update)
-
-    service = select_servicedocument(id_server)
-
-    update = 0
-    if delta_time > CFG_BIBSWORD_SERVICEDOCUMENT_UPDATE_TIME:
-        update = 1
-    elif service == '':
-        update = 1
-
-    if update == 1:
-        authentication_info = get_remote_server_auth(id_server)
-        connection = RemoteSwordServer(authentication_info)
-        service = connection.get_remote_collection(\
-            authentication_info['url_servicedocument'])
-        if service == '':
-            service = select_servicedocument(id_server)
-        else:
-            update_servicedocument(service, id_server)
-
-    return service
-
-
-#-------------------------------------------------------------------------------
-# Implementation of the Command line client
-#-------------------------------------------------------------------------------
-
-def usage(exitcode=1, msg=""):
-    """Prints usage info."""
-    if msg:
-        sys.stderr.write("*************************************************"\
-                         "***********************************\n")
-        sys.stderr.write("                                          ERROR\n")
-        sys.stderr.write("message: %s \n" % msg)
-        sys.stderr.write("*************************************************"\
-                         "***********************************\n")
-    sys.stderr.write("\n")
-    sys.stderr.write("Usage: %s [options] \n" % sys.argv[0])
-    sys.stderr.write("\n")
-    sys.stderr.write("*****************************************************"\
-                         "**********************************\n")
-    sys.stderr.write("                                             OPTIONS\n")
-    sys.stderr.write("*****************************************************"\
-                         "**********************************\n")
-    sys.stderr.write("-h, --help      : Print this help.\n")
-    sys.stderr.write("-s, --simulation: Proceed in a simulation mode\n")
-    sys.stderr.write("\n")
-    sys.stderr.write("*****************************************************"\
-                         "**********************************\n")
-    sys.stderr.write("                                             HELPERS\n")
-    sys.stderr.write("*****************************************************"\
-                         "**********************************\n")
-    sys.stderr.write("-r, --list-remote-servers:    List all available remote"\
-                         " server\n")
-    sys.stderr.write("-i, --list-server-info --server-id: Display SWORD"\
-                         " informations about the server \n")
-    sys.stderr.write("-c, --list-collections --server-id: List collections "\
-                         "for the specified server\n")
-    sys.stderr.write("-n, --list-collection-info --server-id --collection_id:"\
-                         " Display infos about collection \n")
-    sys.stderr.write("-p, --list-primary-categories --server-id "\
-                         "--colleciton_id: List mandated categories\n")
-    sys.stderr.write("-o, --list-optional-categories --server-id "\
-                         "--collection_id: List secondary categories\n")
-    sys.stderr.write("-v, --list-submission [--server-id --id_record]: "\
-                         "List submission entry in swrCLIENTDATA\n")
-    sys.stderr.write("\n")
-    sys.stderr.write("*****************************************************"\
-                         "**********************************\n")
-    sys.stderr.write("                                             OERATIONS\n")
-    sys.stderr.write("*****************************************************"\
-                         "**********************************\n")
-    sys.stderr.write("-m, --get-marcxml-from-recid --recid: Display the"\
-                         " MARCXML file for the given record\n")
-    sys.stderr.write("-e, --get-media-resource [--marcxml-file|--recid]: "\
-                         "Display type and url of the media\n")
-    sys.stderr.write("-z, --compress-media-file [--marcxml-file|--recid]: "\
-                         "Dipsplay the zipped size archive\n")
-    sys.stderr.write("-d, --deposit-media --server-id --collection_id "\
-                         "--media: deposit media in colleciton\n")
-    sys.stderr.write("-f, --format-metadata --server-id --metadata "\
-                         "--marcxml: format metadata for the server\n")
-    sys.stderr.write("-l, --submit-metadata --server-id --collection-id "\
-                         "--metadata: submit metadata to server\n")
-    sys.stderr.write("-a, --proceed-submission --server-id --recid "\
-                         "--metadata: do the entire deposit process\n")
-    sys.stderr.write("\n")
-    sys.exit(exitcode)
-
-
-def main():
-    """
-        main entry point for webdoc via command line
-    """
-    options = {'action':'',
-               'server-id':0,
-               'recid':0,
-               'collection-id':0,
-               'mode':2,
-               'marcxml-file': '',
-               'collection_url':'',
-               'deposit-result':'',
-               'metadata':'',
-               'proceed-submission':'',
-               'list-submission':''}
-
-    try:
-        opts, args = getopt.getopt(sys.argv[1:],
-                                    "hsricnpovmezdfla",
-                                    ["help",
-                                    "simulation",
-                                    "list-remote-servers",
-                                    "list-server-info",
-                                    "list-collections",
-                                    "list-collection-info",
-                                    "list-primary-categories",
-                                    "list-optional-categories",
-                                    "list-submission",
-                                    "get-marcxml-from-recid",
-                                    "get-media-resource",
-                                    "compress-media-file",
-                                    "deposit-media",
-                                    "format-metadata",
-                                    "submit-metadata",
-                                    "proceed-submission",
-                                    "server-id=",
-                                    "collection-id=",
-                                    "recid=",
-                                    "marcxml-file=",
-                                    "collection_url=",
-                                    "deposit-result=",
-                                    "metadata=",
-                                    "yes-i-know"
-                                    ])
-
-    except getopt.GetoptError, err:
-        usage(1, err)
-
-    if len(opts) == 0:
-        usage(1, 'No options given')
-
-    if not '--yes-i-know' in sys.argv[1:]:
-        print "This is an experimental tool. It is disabled for the moment."
-        sys.exit(0)
-
-    try:
-        for opt in opts:
-            if opt[0] in ["-h", "--help"]:
-                usage(0)
-
-            elif opt[0] in ["-s", "--simulation"]:
-                options["simulation"]  = int(opt[1])
-
-            #-------------------------------------------------------------------
-
-            elif opt[0] in ["-r", "--list-remote-servers"]:
-                options["action"] = "list-remote-servers"
-
-            elif opt[0] in ["-i", "--list-server-info"]:
-                options["action"] = "list-server-info"
-
-            elif opt[0] in ["-c", "--list-collections"]:
-                options["action"] = "list-collections"
-
-            elif opt[0] in ["-n", "--list-collection-info"]:
-                options["action"] = "list-collection-info"
-
-            elif opt[0] in ["-p", "--list-primary-categories"]:
-                options["action"] = "list-primary-categories"
-
-            elif opt[0] in ["-o", "--list-optional-categories"]:
-                options["action"] = "list-optional-categories"
-
-            elif opt[0] in ["-v", "--list-submission"]:
-                options['action'] = 'list-submission'
-
-            elif opt[0] in ["-m", "--get-marcxml-from-recid"]:
-                options["action"] = "get-marcxml-from-recid"
-
-            elif opt[0] in ["-e", "--get-media-resource"]:
-                options['action'] = "get-media-resource"
-
-            elif opt[0] in ["-z", "--compress-media-file"]:
-                options['action'] = "compress-media-file"
-
-            elif opt[0] in ["-d", "--deposit-media"]:
-                options['action'] = "deposit-media"
-
-            elif opt[0] in ["-f", "--format-metadata"]:
-                options['action'] = "format-metadata"
-
-            elif opt[0] in ["l", "--submit-metadata"]:
-                options['action'] = "submit-metadata"
-
-            elif opt[0] in ["-a", "--proceed-submission"]:
-                options['action'] = 'proceed-submission'
-
-
-            #-------------------------------------------------------------------
-
-            elif opt[0] in ["--server-id"]:
-                options["server-id"] = int(opt[1])
-
-            elif opt[0] in ["--collection-id"]:
-                options["collection-id"] = int(opt[1])
-
-            elif opt[0] in ["--recid"]:
-                options["recid"] = int(opt[1])
-
-            elif opt[0] in ['--marcxml-file']:
-                options['marcxml-file'] = opt[1]
-
-            elif opt[0] in ['--collection_url']:
-                options['collection_url'] = opt[1]
-
-            elif opt[0] in ['--deposit-result']:
-                options['deposit-result'] = opt[1]
-
-            elif opt[0] in ['--metadata']:
-                options['metadata'] = opt[1]
-
-
-    except StandardError, message:
-        usage(message)
-
-    #---------------------------------------------------------------------------
-    # --check parameters type
-    #---------------------------------------------------------------------------
-
-    try:
-        options["server-id"] = int(options["server-id"])
-    except ValueError:
-        usage(1, "--server-id must be an integer")
-
-    try:
-        options["collection-id"] = int(options["collection-id"])
-    except ValueError:
-        usage(1, "--collection-id must be an integer")
-
-    try:
-        options["recid"] = int(options["recid"])
-    except ValueError:
-        usage(1, "--recid must be an integer")
-
-
-    #---------------------------------------------------------------------------
-    # --list-remote-servers
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "list-remote-servers":
-        servers = list_remote_servers()
-        for server in servers:
-            print str(server['id']) +': '+ server['name'] + \
-                  ' ( ' + server['host'] + ' ) '
-
-
-    #---------------------------------------------------------------------------
-    # --list-server-info
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "list-server-info":
-
-        info = list_server_info(options['server-id'])
-
-        if info == {}:
-            print 'Error, no infos found !'
-        else:
-            print 'SWORD version: ' + info['version']
-            print 'Maximal upload size [Kb]: ' + info['maxUploadSize']
-            print 'Implements verbose mode: ' + info['verbose']
-            print 'Implementes simulation mode: ' + info['noOp']
-
-
-    #---------------------------------------------------------------------------
-    # --list-collections
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "list-collections":
-
-        collections = list_collections_from_server(str(options["server-id"]))
-
-        if len(collections) == 0:
-            usage(1, "Wrong server id, try --get-remote-servers")
-
-        for collection in collections:
-            print collection['id'] +': '+ collection['label'] + ' - ' + \
-                  collection['url']
-
-
-    #---------------------------------------------------------------------------
-    # --list-collection-info
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "list-collection-info":
-
-        info = list_collection_informations(str(options['server-id']),
-                                            options['collection-id'])
-
-        print 'Accepted media types:'
-
-        accept_list = info['accept']
-        for accept in accept_list:
-            print '- ' + accept
-
-        print 'collection policy: ' + info['collectionPolicy']
-        print 'mediation allowed: ' + info['mediation']
-        print 'treatment mode: ' + info['treatment']
-        print 'location of accept packaging list: ' + info['acceptPackaging']
-
-    #---------------------------------------------------------------------------
-    # --list-primary-categories
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "list-primary-categories":
-
-        categories = list_mandated_categories(\
-            str(options["server-id"]), options["collection-id"])
-
-        if len(categories) == 0:
-            usage(1, "Wrong server id, try --get-collections")
-
-        for category in categories:
-            print category['id'] +': '+ category['label'] + ' - ' + \
-                    category['url']
-
-
-    #---------------------------------------------------------------------------
-    # --list-optional-categories
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "list-optional-categories":
-
-        categories = list_optional_categories(\
-            str(options["server-id"]), options["collection-id"])
-
-        if len(categories) == 0:
-            usage(1, "Wrong server id, try --get-collections")
-
-        for category in categories:
-            print category['id'] +': '+ category['label'] + ' - ' + \
-                    category['url']
-
-
-    #---------------------------------------------------------------------------
-    # --list-submission
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "list-submission":
-
-        results = select_submitted_record_infos()
-
-        for result in results:
-            print '\n'
-            print 'submission id: ' + str(result[0])
-            print 'remote server id: ' + str(result[1])
-            print 'submitter id: ' + str(result[4])
-            print 'local record id: ' + result[2]
-            print 'remote record id: ' + str(result[3])
-            print 'submit date: ' + result[5]
-            print 'document type: ' + result[6]
-            print 'media link: ' + result[7]
-            print 'metadata link: ' + result[8]
-            print 'status link: ' + result[9]
-
-
-    #---------------------------------------------------------------------------
-    # --get-marcxml-from-recid
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "get-marcxml-from-recid":
-
-        marcxml = get_marcxml_from_record(options['recid'])
-
-        if marcxml == '':
-            usage(1, "recid %d unknown" % options['recid'])
-
-        else:
-            print marcxml
-
-
-    #---------------------------------------------------------------------------
-    # --get-media-resource
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "get-media-resource":
-
-        if options['marcxml-file'] == '':
-            if options ['recid'] == 0:
-                usage (1, "you must provide a metadata file or a valid recid")
-            else:
-                options['marcxml-file'] = \
-                    get_marcxml_from_record(options['recid'])
-        else:
-            options['marcxml-file'] = open(options['marcxml-file']).read()
-
-        medias = get_media_list(options['recid'])
-
-        for media in medias:
-            print 'media_link = '+ media['path']
-            print 'media_type = '+ media['type']
-
-    #---------------------------------------------------------------------------
-    # --compress-media-file
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "compress-media-file":
-
-        if options['marcxml-file'] != '':
-            options['media-file-list'] = \
-                get_media_list(options['recid'])
-        elif options ['recid'] != 0:
-            options['marcxml-file'] = \
-                get_marcxml_from_record(options['recid'])
-            options['media-file-list'] = \
-                get_media_list(options['recid'])
-        else:
-            usage (1, "you must provide a media file list, a metadata file or"+
-                      " a valid recid")
-
-        print compress_media_file(options['media-file-list'])
-
-
-    #---------------------------------------------------------------------------
-    # --deposit-media
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "deposit-media":
-
-        if options["server-id"] == 0:
-            usage (1, "You must select a server where to deposit the resource."+
-                         "\nDo: ./bibSword -l")
-
-        if options['marcxml-file'] != '':
-            options['media-file-list'] = \
-                get_media_list(options['recid'])
-        elif options ['recid'] != 0:
-            options['marcxml-file'] = get_marcxml_from_record(options['recid'])
-            options['media-file-list'] = \
-                get_media_list(options['recid'])
-        else:
-            usage (1, "you must provide a media file list, a metadata file" +
-                      " or a valid recid")
-
-        collection = 'https://arxiv.org/sword-app/physics-collection'
-        medias = options['media-file-list']
-        server_id = options["server-id"]
-
-        print collection
-        for media in medias:
-            print media['type']
-        print server_id
-
-        result = deposit_media(server_id, medias, collection)
-
-        for result in results:
-            print result
-
-
-    #---------------------------------------------------------------------------
-    # --format-metadata
-    #---------------------------------------------------------------------------
-    user_info = {'id':'1',
-                 'nickname':'admin',
-                 'email': CFG_SITE_ADMIN_EMAIL}
-
-    if options['action'] == "format-metadata":
-
-        if options['marcxml-file'] == '':
-            if options ['recid'] != 0:
-                options['marcxml-file'] = \
-                    get_marcxml_from_record(options['recid'])
-            else:
-                usage (1, "you must provide a metadata file or a valid recid")
-
-        deposit = []
-        deposit.append(options['deposit-result'])
-
-        print format_metadata(options['marcxml-file'], deposit,
-                              user_info)
-
-
-    #---------------------------------------------------------------------------
-    # --submit-metadata
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "submit-metadata":
-
-        if options['collection_url'] == '':
-            if options['server-id'] == '' or options['collection-id'] == '':
-                usage(1, \
-               "You must enter a collection or a server-id and a collection-id")
-
-        if options['metadata'] == '':
-            usage(1, \
-                "You must enter the location of the metadata file to submit")
-
-        if options['server-id'] == '':
-            usage(1, "You must specify the server id")
-
-        metadata = open(options['metadata']).read()
-
-        print submit_metadata(options['server-id'],
-                              options['collection_url'],
-                              metadata,
-                              user_info['nickname'],
-                              user_info['email'])
-
-
-    #---------------------------------------------------------------------------
-    # --proceed-submission
-    #---------------------------------------------------------------------------
-
-    if options['action'] == "proceed-submission":
-
-        if options["server-id"] == 0:
-            usage (1, "You must select a server where to deposit the resource."+
-                         "\nDo: ./bibSword -l")
-
-        if options["recid"] == 0:
-            usage(1, "You must specify the record to submit")
-
-        metadata = {'title':'',
-                  'id':'',
-                  'updated':'',
-                  'author_name':'Invenio Admin',
-                  'author_email': CFG_SITE_ADMIN_EMAIL,
-                  'contributors': [],
-                  'summary':'',
-                  'categories':[],
-                  'primary_label':'High Energy Astrophysical Phenomena',
-                  'primary_url':'http://arxiv.org/terms/arXiv/astro-ph.HE',
-                  'comment':'',
-                  'doi':'',
-                  'report_nos':[],
-                  'journal_refs':[],
-                  'links':[]}
-
-        collection =  'https://arxiv.org/sword-app/physics-collection'
-
-        server_id = 1
-
-        response = perform_submission_process(options["server-id"], user_info,
-                                              metadata, collection, '', '',
-                                              options['recid'])
-
-        if response['error'] != '':
-            print 'error: ' + response['error']
-
-        if response['message'] != '':
-            print 'message: ' + response['message']
-
-        for deposit_media in response['deposit_media']:
-            print 'deposit_media: \n ' + deposit_media
-
-        if response['submit_metadata'] != '':
-            print 'submit_metadata: \n ' + response['submit_metadata']
-
-
-#-------------------------------------------------------------------------------
-#  avoid launching file during inclusion
-#-------------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    main()
-
-
-
-#-------------------------------------------------------------------------------
-# Implementation of the Web Client
-#-------------------------------------------------------------------------------
-
-def perform_display_sub_status(first_row=1, offset=10,
-                               action="submitted"):
-    '''
-        Get the given submission status and display it in a html table
-        @param first_row: first row of the swrCLIENTDATA table to display
-        @param offset: nb of row to select
-        @return: html code containing submission status table
-    '''
-
-    #declare return values
-    body = ''
-    errors = []
-    warnings = []
-
-    if first_row < 1:
-        first_row = 1
-
-    submissions = list_submitted_resources(int(first_row)-1, offset, action)
-
-    total_rows = count_nb_submitted_record()
-    last_row = first_row + offset - 1
-    if last_row > total_rows:
-        last_row = total_rows
-
-    selected_offset = []
-    if offset == 5:
-        selected_offset.append('selected')
-    else:
-        selected_offset.append('')
-
-    if offset == 10:
-        selected_offset.append('selected')
-    else:
-        selected_offset.append('')
-
-    if offset == 25:
-        selected_offset.append('selected')
-    else:
-        selected_offset.append('')
-
-    if offset == 50:
-        selected_offset.append('selected')
-    else:
-        selected_offset.append('')
-
-    if offset == total_rows:
-        selected_offset.append('selected')
-    else:
-        selected_offset.append('')
-
-    if first_row == 1:
-        is_first = 'disabled'
-    else:
-        is_first = ''
-
-    tmp_last = total_rows - offset
-
-    if first_row > tmp_last:
-        is_last = 'disabled'
-    else:
-        is_last = ''
-
-    bibsword_template = BibSwordTemplate()
-    body = bibsword_template.tmpl_display_admin_page(submissions,
-                                                     first_row,
-                                                     last_row,
-                                                     total_rows,
-                                                     is_first,
-                                                     is_last,
-                                                     selected_offset)
-
-    return (body, errors, warnings)
-
-
-def perform_display_server_infos(id_server):
-    '''
-        This function get the server infos in the swrREMOTESERVER table
-        and display it as an html table
-        @param id_server: id of the server to get the infos
-        @return: html table code to display
-    '''
-
-    server_infos = select_remote_server_infos(id_server)
-    bibsword_template = BibSwordTemplate()
-    return bibsword_template.tmpl_display_remote_server_info(server_infos)
-
-
-def perform_display_server_list(error_messages, id_record=""):
-    '''
-        Get the list of remote SWORD server implemented by the BibSword API
-        and generate the html code that display it as a dropdown list
-        @param error_messages: list of errors that may happens in validation
-        @return: string containing the generated html code
-    '''
-
-    #declare return values
-    body = ''
-    errors = []
-    warnings = []
-
-    # define the list that will contains the remote servers
-    remote_servers = []
-
-    # get the remote servers from the API
-    remote_servers = list_remote_servers()
-
-    # check that the list contains at least one remote server
-    if len(remote_servers) == 0:
-        # add an error to the error list
-        errors.append('There is no remote server to display')
-
-    else:
-        # format the html body string to containing remote server dropdown list
-        bibsword_template = BibSwordTemplate()
-        body = bibsword_template.tmpl_display_remote_servers(remote_servers,
-                                                             id_record,
-                                                             error_messages)
-
-    return (body, errors, warnings)
-
-
-def perform_display_collection_list(id_server, id_record, recid,
-                                    error_messages=None):
-    '''
-        Get the list of collections contained in the given remote server and
-        generate the html code that display it as a dropdown list
-        @param id_server: id of the remote server selected by the user
-        @param error_messages: list of errors that may happens in validation
-        @return: string containing the generated html code
-    '''
-
-    if error_messages == None:
-        error_messages = []
-
-    #declare return values
-    body = ''
-    errors = []
-    warnings = []
-
-    # get the server's name and host
-    remote_servers = list_remote_servers(id_server)
-    if len(remote_servers) > 0:
-        remote_server = remote_servers[0]
-
-    # get the server's informations to display
-    remote_server_infos = list_server_info(id_server)
-    if remote_server_infos['error'] != '':
-        error_messages.append(remote_server_infos['error'])
-
-    # get the server's collections
-    collections = list_collections_from_server(id_server)
-
-    if len(collections) == 0:
-        # add an error to the error list
-        error_messages.append('There are no collection to display')
-
-     # format the html body string to containing remote server's dropdown list
-    bibsword_template = BibSwordTemplate()
-    body = bibsword_template.tmpl_display_collections(remote_server,
-                                                      remote_server_infos,
-                                                      collections,
-                                                      id_record,
-                                                      recid,
-                                                      error_messages)
-
-    return (body, errors, warnings)
-
-
-def perform_display_category_list(id_server, id_collection, id_record, recid,
-                                             error_messages=None):
-    '''
-        Get the list of mandated and optional categories contained in the given
-        collection and generate the html code that display it as a dropdown list
-        @param id_server: id of the remote server selected by the user
-        @param id_collection: id of the collection selected by the user
-        @param error_messages: list of errors that may happens in validation
-        @return: string containing the generated html code
-    '''
-
-    if error_messages == None:
-        error_messages = []
-
-    #declare return values
-    body = ''
-    errors = []
-    warnings = []
-
-    # get the server's name and host
-    remote_servers = list_remote_servers(id_server)
-    if len(remote_servers) > 0:
-        remote_server = remote_servers[0]
-
-    # get the server's informations to display
-    remote_server_infos = list_server_info(id_server)
-
-    # get the collection's name and link
-    collections = list_collections_from_server(id_server)
-    collection = {}
-    for item in collections:
-        if item['id'] == id_collection:
-            collection = item
-
-    # get the collection's informations to display
-    collection_infos = list_collection_informations(id_server, id_collection)
-
-    # get primary category list
-    primary_categories = list_mandated_categories(id_server, id_collection)
-
-    # get optional categories
-    optional_categories = list_optional_categories(id_server, id_collection)
-
-    # format the html body string to containing category's dropdown list
-    bibsword_template = BibSwordTemplate()
-    body = bibsword_template.tmpl_display_categories(remote_server,
-                                                     remote_server_infos,
-                                                     collection,
-                                                     collection_infos,
-                                                     primary_categories,
-                                                     optional_categories,
-                                                     id_record,
-                                                     recid,
-                                                     error_messages)
-
-    return (body, errors, warnings)
-
-
-def perform_display_metadata(user, id_server, id_collection, id_primary,
-                             id_categories, id_record, recid,
-                             error_messages=None, metadata=None):
-    '''
-        Get the list of metadata contained in the given marcxml or given by
-        the users and generate the html code that display it as the summary list
-        for the submission
-        @param id_server: id of the remote server selected by the user
-        @param id_collection: id of the collection selected by the user
-        @param id_primary: primary collection selected by the user
-        @param id_record: record number entered by the user
-        @param recid: record id corresponding to the selected record
-        @param error_messages: list of errors that may happens in validation
-        @param metadata: if present, replace the default entry from marcxml
-        @return: string containing the generated html code
-    '''
-
-    if error_messages == None:
-        error_messages = []
-
-    if metadata == None:
-        metadata = {}
-
-    #declare return values
-    body = ''
-    errors = []
-    warnings = []
-
-
-    # get the server's name and host
-    remote_servers = list_remote_servers(id_server)
-    if len(remote_servers) > 0:
-        remote_server = remote_servers[0]
-
-
-    # get the collection's name and link
-    collections = list_collections_from_server(id_server)
-    collection = {}
-    for item in collections:
-        if item['id'] == id_collection:
-            collection = item
-            break
-
-
-    # get primary category name and host
-    primary_categories = list_mandated_categories(id_server, id_collection)
-    primary = {}
-    for category in primary_categories:
-        if category['id'] == id_primary:
-            primary = category
-            break
-
-
-    categories = []
-    if len(id_categories) > 0:
-        # get optional categories name and host
-        optional_categories = list_optional_categories(id_server, id_collection)
-        for item in optional_categories:
-            category = {}
-            for id_category in id_categories:
-                if item['id'] == id_category:
-                    category = item
-                    categories.append(category)
+            self._sid = sid
+        return self._sid
+
+    def _get_random_id(self, size_range=RANDOM_RANGE, chars=RANDOM_CHARS):
+        return ''.join(random.choice(chars) for i in size_range)
+
+    def _set_recid_and_record(self, recid):
+        self._recid = recid
+        self._record = get_record(recid)
+
+    def get_recid(self):
+        return self._recid
+
+    def _get_marc_field_parts(self, field):
+        tag = field[0:3].lower()
+        ind1 = field[3].lower().replace('_', ' ')
+        ind2 = field[4].lower().replace('_', ' ')
+        subfield = field[5].lower()
+
+        return (tag, ind1, ind2, subfield)
+
+    def get_record_title(self, force=False):
+
+        if '_title' not in self.__dict__.keys() or force:
+
+            self._title = ""
+
+            (tag, ind1, ind2, subfield) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['title']
+            )
+
+            for record_title in self._record.get(tag, []):
+                if _decapitalize(record_title[1:3]) == (ind1, ind2):
+                    for (code, value) in record_title[0]:
+                        if code.lower() == subfield:
+                            self._title = value
+                            break
+                            # Only get the first occurrence
+                            break
+
+        return self._title
+
+    def set_record_title(self, title):
+        # TODO: Should we unescape here?
+        self._title = title
+
+    def get_record_abstract(self, force=False):
+
+        if '_abstract' not in self.__dict__.keys() or force:
+
+            self._abstract = ""
+
+            (tag, ind1, ind2, subfield) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['abstract']
+            )
+
+            for record_abstract in self._record.get(tag, []):
+                if _decapitalize(record_abstract[1:3]) == (ind1, ind2):
+                    for (code, value) in record_abstract[0]:
+                        if code.lower() == subfield:
+                            self._abstract = value
+                            break
+                            # Only get the first occurrence
+                            break
+
+        return self._abstract
+
+    def set_record_abstract(self, abstract):
+        self._abstract = abstract
+
+    def get_record_author(self, force=False):
+
+        if '_author' not in self.__dict__.keys() or force:
+
+            author_name = ""
+            author_email = ""
+            author_affiliation = ""
+
+            (
+                tag_name,
+                ind1_name,
+                ind2_name,
+                subfield_name
+            ) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['author_name']
+            )
+
+            (
+                tag_email,
+                ind1_email,
+                ind2_email,
+                subfield_email
+            ) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['author_email']
+            )
+
+            (
+                tag_aff,
+                ind1_aff,
+                ind2_aff,
+                subfield_aff
+            ) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['author_affiliation']
+            )
+
+            for record_author_name in self._record.get(tag_name, []):
+                if _decapitalize(record_author_name[1:3]) == (
+                    ind1_name, ind2_name
+                ):
+                    for (code, value) in record_author_name[0]:
+                        if code.lower() == subfield_name:
+                            author_name = value
+                            break
+                    if tag_name == tag_email and (ind1_name, ind2_name) == (
+                        ind1_email, ind2_email
+                    ):
+                        for (code, value) in record_author_name[0]:
+                            if code.lower() == subfield_email:
+                                author_email = value
+                                break
+                    if tag_name == tag_aff and (ind1_name, ind2_name) == (
+                        ind1_aff, ind2_aff
+                    ):
+                        for (code, value) in record_author_name[0]:
+                            if code.lower() == subfield_aff:
+                                author_affiliation = value
+                                break
+                    # Only get the first occurrence
                     break
 
-    # get the marcxml file
-    marcxml = get_marcxml_from_record(recid)
+            if tag_name != tag_email or (ind1_name, ind2_name) != (
+                ind1_email, ind2_email
+            ):
+                for record_author_email in self._record.get(tag_email, []):
+                    if _decapitalize(record_author_email[1:3]) == (
+                        ind1_email, ind2_email
+                    ):
+                        for (code, value) in record_author_email[0]:
+                            if code.lower() == subfield_email:
+                                author_email = value
+                                break
+                                # Only get the first occurrence
+                                break
 
-    # select the medias
-    if 'selected_medias' in metadata:
-        medias = get_media_list(recid, metadata['selected_medias'])
+            if tag_name != tag_aff or (ind1_name, ind2_name) != (
+                ind1_aff, ind2_aff
+            ):
+                for record_author_affiliation in self._record.get(tag_aff, []):
+                    if _decapitalize(record_author_affiliation[1:3]) == (
+                        ind1_aff, ind2_aff
+                    ):
+                        for (code, value) in record_author_affiliation[0]:
+                            if code.lower() == subfield_aff:
+                                author_affiliation = value
+                                break
+                                # Only get the first occurrence
+                                break
+
+            self._author = (author_name, author_email, author_affiliation)
+
+        return self._author
+
+    def set_record_author(
+        self,
+        (author_name, author_email, author_affiliation)
+    ):
+        self._author = (author_name, author_email, author_affiliation)
+
+    def _equalize_lists(self, *args):
+
+        max_len = max([len(arg) for arg in args])
+
+        for arg in args:
+            diff = max_len - len(arg)
+            if diff > 0:
+                arg.extend([None] * diff)
+
+    def get_record_contributors(self, force=False):
+
+        if '_contributors' not in self.__dict__.keys() or force:
+
+            self._contributors = []
+
+            contributors_names = []
+            contributors_emails = []
+            contributors_affiliations = []
+
+            (
+                tag_name,
+                ind1_name,
+                ind2_name,
+                subfield_name
+            ) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['contributor_name']
+            )
+
+            (
+                tag_aff,
+                ind1_aff,
+                ind2_aff,
+                subfield_aff
+            ) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['contributor_affiliation']
+            )
+
+            for record_contributor_name in self._record.get(tag_name, []):
+                contributor_name = None
+                contributor_email = None
+                contributor_affiliation = None
+                if _decapitalize(record_contributor_name[1:3]) == (
+                    ind1_name, ind2_name
+                ):
+                    for (code, value) in record_contributor_name[0]:
+                        if code.lower() == subfield_name:
+                            contributor_name = value
+                            break
+                    contributors_names.append(contributor_name)
+                    if tag_name == tag_aff and (ind1_name, ind2_name) == (
+                        ind1_aff, ind2_aff
+                    ):
+                        for (code, value) in record_contributor_name[0]:
+                            if code.lower() == subfield_aff:
+                                contributor_affiliation = value
+                                break
+                        contributors_affiliations.append(
+                            contributor_affiliation
+                        )
+
+                if tag_name != tag_aff or (ind1_name, ind2_name) != (
+                    ind1_aff, ind2_aff
+                ):
+                    for record_contributor_affiliation in self._record.get(
+                        tag_aff, []
+                    ):
+                        if _decapitalize(
+                            record_contributor_affiliation[1:3]
+                        ) == (ind1_aff, ind2_aff):
+                            for (
+                                code,
+                                value
+                            ) in record_contributor_affiliation[0]:
+                                if code.lower() == subfield_aff:
+                                    contributor_affiliation = value
+                                    break
+                            contributors_affiliations.append(
+                                contributor_affiliation
+                            )
+
+                self._equalize_lists(
+                    contributors_names,
+                    contributors_emails,
+                    contributors_affiliations
+                )
+                self._contributors = zip(
+                    contributors_names,
+                    contributors_emails,
+                    contributors_affiliations
+                )
+
+        return self._contributors
+
+    def set_record_contributors(
+        self,
+        (contributors_names, contributors_emails, contributors_affiliations)
+    ):
+        self._contributors = zip(
+            contributors_names,
+            contributors_emails,
+            contributors_affiliations
+        )
+
+    def get_record_report_number(self, force=False):
+
+        if '_rn' not in self.__dict__.keys() or force:
+
+            self._rn = ""
+
+            (tag, ind1, ind2, subfield) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['rn']
+            )
+
+            for record_rn in self._record.get(tag, []):
+                if _decapitalize(record_rn[1:3]) == (ind1, ind2):
+                    for (code, value) in record_rn[0]:
+                        if code.lower() == subfield:
+                            self._rn = value
+                            break
+                            # Only get the first occurrence
+                            break
+
+        return self._rn
+
+    def set_record_report_number(self, rn):
+        self._rn = rn
+
+    def get_record_additional_report_numbers(self, force=False):
+
+        if '_additional_rn' not in self.__dict__.keys() or force:
+
+            self._additional_rn = []
+
+            (tag, ind1, ind2, subfield) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['additional_rn']
+            )
+
+            for record_additional_rn in self._record.get(tag, []):
+                if _decapitalize(record_additional_rn[1:3]) == (ind1, ind2):
+                    for (code, value) in record_additional_rn[0]:
+                        if code.lower() == subfield:
+                            self._additional_rn.append(value)
+                            break
+
+            self._additional_rn = tuple(self._additional_rn)
+
+        return self._additional_rn
+
+    def set_record_additional_report_numbers(self, additional_rn):
+        self._additional_rn = tuple(additional_rn)
+
+    def get_record_doi(self, force=False):
+
+        if '_doi' not in self.__dict__.keys() or force:
+
+            self._doi = ""
+
+            (tag, ind1, ind2, subfield) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['doi']
+            )
+
+            for record_doi in self._record.get(tag, []):
+                if _decapitalize(record_doi[1:3]) == (ind1, ind2):
+                    for (code, value) in record_doi[0]:
+                        if code.lower() == subfield:
+                            self._doi = value
+                            break
+                            # Only get the first occurrence
+                            break
+
+        return self._doi
+
+    def set_record_doi(self, doi):
+        self._doi = doi
+
+    def get_record_comments(self, force=False):
+
+        if '_comments' not in self.__dict__.keys() or force:
+
+            self._comments = []
+
+            (tag, ind1, ind2, subfield) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['comments']
+            )
+
+            for record_comments in self._record.get(tag, []):
+                if _decapitalize(record_comments[1:3]) == (ind1, ind2):
+                    for (code, value) in record_comments[0]:
+                        if code.lower() == subfield:
+                            self._comments.append(value)
+                            break
+
+            self._comments = tuple(self._comments)
+
+        return self._comments
+
+    def set_record_comments(self, comments):
+        self._comments = tuple(comments)
+
+    def get_record_internal_notes(self, force=False):
+
+        if '_internal_notes' not in self.__dict__.keys() or force:
+
+            self._internal_notes = []
+
+            (tag, ind1, ind2, subfield) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['internal_notes']
+            )
+
+            for record_internal_notes in self._record.get(tag, []):
+                if _decapitalize(record_internal_notes[1:3]) == (ind1, ind2):
+                    for (code, value) in record_internal_notes[0]:
+                        if code.lower() == subfield:
+                            self._internal_notes.append(value)
+                            break
+
+            self._internal_notes = tuple(self._internal_notes)
+
+        return self._internal_notes
+
+    def set_record_internal_notes(self, internal_notes):
+        self._internal_notes = tuple(internal_notes)
+
+    def get_record_journal_info(self, force=False):
+
+        if '_journal_info' not in self.__dict__.keys() or force:
+
+            journal_code = ""
+            journal_title = ""
+            journal_page = ""
+            journal_year = ""
+
+            (
+                tag_code,
+                ind1_code,
+                ind2_code,
+                subfield_code
+            ) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['journal_code']
+            )
+
+            (
+                tag_title,
+                ind1_title,
+                ind2_title,
+                subfield_title
+            ) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['journal_title']
+            )
+
+            (
+                tag_page,
+                ind1_page,
+                ind2_page,
+                subfield_page
+            ) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['journal_page']
+            )
+
+            (
+                tag_year,
+                ind1_year,
+                ind2_year,
+                subfield_year
+            ) = self._get_marc_field_parts(
+                CFG_BIBSWORD_MARC_FIELDS['journal_year']
+            )
+
+            for record_journal_code in self._record.get(tag_code, []):
+                if _decapitalize(record_journal_code[1:3]) == (
+                    ind1_code, ind2_code
+                ):
+                    for (code, value) in record_journal_code[0]:
+                        if code.lower() == subfield_code:
+                            journal_code = value
+                            break
+                    if tag_code == tag_title and (ind1_code, ind2_code) == (
+                        ind1_title, ind2_title
+                    ):
+                        for (code, value) in record_journal_code[0]:
+                            if code.lower() == subfield_title:
+                                journal_title = value
+                                break
+                    if tag_code == tag_page and (ind1_code, ind2_code) == (
+                        ind1_page, ind2_page
+                    ):
+                        for (code, value) in record_journal_code[0]:
+                            if code.lower() == subfield_page:
+                                journal_page = value
+                                break
+                    if tag_code == tag_year and (ind1_code, ind2_code) == (
+                        ind1_year, ind2_year
+                    ):
+                        for (code, value) in record_journal_code[0]:
+                            if code.lower() == subfield_year:
+                                journal_year = value
+                                break
+                    # Only get the first occurrence
+                    break
+
+            if tag_code != tag_title or (ind1_code, ind2_code) != (
+                ind1_title, ind2_title
+            ):
+                for record_journal_title in self._record.get(tag_title, []):
+                    if _decapitalize(record_journal_title[1:3]) == (
+                        ind1_title, ind2_title
+                    ):
+                        for (code, value) in record_journal_title[0]:
+                            if code.lower() == subfield_title:
+                                journal_title = value
+                                break
+                                # Only get the first occurrence
+                                break
+
+            if tag_code != tag_page or (ind1_code, ind2_code) != (
+                ind1_page, ind2_page
+            ):
+                for record_journal_page in self._record.get(tag_page, []):
+                    if _decapitalize(record_journal_page[1:3]) == (
+                        ind1_page, ind2_page
+                    ):
+                        for (code, value) in record_journal_page[0]:
+                            if code.lower() == subfield_page:
+                                journal_page = value
+                                break
+                                # Only get the first occurrence
+                                break
+
+            if tag_code != tag_year or (ind1_code, ind2_code) != (
+                ind1_year, ind2_year
+            ):
+                for record_journal_year in self._record.get(tag_year, []):
+                    if _decapitalize(record_journal_year[1:3]) == (
+                        ind1_year, ind2_year
+                    ):
+                        for (code, value) in record_journal_year[0]:
+                            if code.lower() == subfield_year:
+                                journal_year = value
+                                break
+                                # Only get the first occurrence
+                                break
+
+            self._journal_info = (
+                journal_code,
+                journal_title,
+                journal_page,
+                journal_year
+            )
+
+        return self._journal_info
+
+    def set_record_journal_info(
+        self,
+        (journal_code, journal_title, journal_page, journal_year)
+    ):
+        self._journal_info = (
+            journal_code,
+            journal_title,
+            journal_page,
+            journal_year
+        )
+
+    def get_record_modification_date(self, force=False):
+        if '_modification_date' not in self.__dict__.keys() or force:
+            self._modification_date = get_modification_date(
+                self.get_recid(),
+                CFG_BIBSWORD_UPDATED_DATE_MYSQL_FORMAT +
+                CFG_BIBSWORD_LOCAL_TIMEZONE
+            )
+        return self._modification_date
+
+    def set_record_modification_date(self, modification_date):
+        self._modification_date = modification_date
+
+    def get_accepted_file_types(self):
+        if '_accepted_file_types' not in self.__dict__.keys():
+            if '_collection_url' not in self.__dict__.keys():
+                self._collection_url = self.get_collection_url()
+            self._accepted_file_types = self._server.get_accepted_file_types(
+                self._collection_url
+            )
+        return self._accepted_file_types
+
+    def get_maximum_file_size(self):
+        """
+        In bytes.
+        """
+        if '_maximum_file_size' not in self.__dict__.keys():
+            self._maximum_file_size = self._server.get_maximum_file_size()
+        return self._maximum_file_size
+
+    def get_record_files(self):
+
+        if '_files' not in self.__dict__.keys():
+
+            # Fetch all the record's files and cross-check the list
+            # against the accepted file types of the chosen collection
+            # and the maximum file size
+
+            accepted_file_types = self.get_accepted_file_types()
+            maximum_file_size = self.get_maximum_file_size()
+
+            self._files = {}
+            counter = 0
+
+            brd = BibRecDocs(self._recid)
+            bdfs = brd.list_latest_files()
+            for bdf in bdfs:
+                extension = bdf.get_superformat()
+                checksum = bdf.get_checksum()
+                path = bdf.get_full_path()
+                url = bdf.get_url()
+                name = bdf.get_full_name()
+                size = bdf.get_size()
+                mime = bdf.mime
+
+                if (extension in accepted_file_types) and (
+                    size <= maximum_file_size
+                ):
+                    counter += 1
+                    self._files[counter] = {
+                        'name': name,
+                        'path': path,
+                        'url': url,
+                        'checksum': checksum,
+                        'size': size,
+                        'mime': mime,
+                    }
+
+        return self._files
+
+    def get_files_indexes(self):
+        if '_files_indexes' not in self.__dict__.keys():
+            self._files_indexes = ()
+        return self._files_indexes
+
+    def set_files_indexes(self, files_indexes):
+        self._files_indexes = tuple(map(int, files_indexes))
+
+    def get_server_id(self):
+        if '_server_id' not in self.__dict__.keys():
+            self._server_id = None
+        return self._server_id
+
+    def set_server_id(self, server_id):
+        self._server_id = server_id
+
+    def get_server(self):
+        if '_server' not in self.__dict__.keys():
+            self._server = None
+        return self._server
+
+    def set_server(self, server):
+        self._server = server
+
+    def get_available_collections(self):
+        if '_available_collections' not in self.__dict__.keys():
+            if '_server' not in self.__dict__.keys():
+                self._server = self.get_server()
+            self._available_collections = self._server.get_collections()
+        return self._available_collections
+
+    def get_collection_url(self):
+        if '_collection_url' not in self.__dict__.keys():
+            self._collection_url = None
+        return self._collection_url
+
+    def set_collection_url(self, collection_url):
+        self._collection_url = collection_url
+
+    def get_available_categories(self):
+        if '_available_categories' not in self.__dict__.keys():
+            if '_collection_url' not in self.__dict__.keys():
+                self._collection_url = self.get_collection_url()
+            self._available_categories = self._server.get_categories(
+                self._collection_url
+            )
+        return self._available_categories
+
+    def set_mandatory_category_url(self, mandatory_category_url):
+        self._mandatory_category_url = mandatory_category_url
+
+    def get_mandatory_category_url(self):
+        if '_mandatory_category_url' not in self.__dict__.keys():
+            self._mandatory_category_url = None
+        return self._mandatory_category_url
+
+    def set_optional_categories_urls(self, optional_categories_urls):
+        self._optional_categories_urls = tuple(optional_categories_urls)
+
+    def get_optional_categories_urls(self):
+        if '_optional_categories_urls' not in self.__dict__.keys():
+            self._optional_categories_urls = ()
+        return self._optional_categories_urls
+
+    def submit(self):
+
+        # Prepare the URL
+        url = self.get_collection_url()
+
+        # Prepare the metadata
+
+        # Prepare the mandatory and optional categories
+        available_categories = self.get_available_categories()
+        mandatory_category_url = self.get_mandatory_category_url()
+        optional_categories_urls = self.get_optional_categories_urls()
+        mandatory_category = {
+            "term": mandatory_category_url,
+            "scheme": available_categories[
+                "mandatory"
+            ][
+                mandatory_category_url
+            ][
+                "scheme"
+            ],
+            "label": available_categories[
+                "mandatory"
+            ][
+                mandatory_category_url
+            ][
+                "label"
+            ],
+        }
+        optional_categories = []
+        for optional_category_url in optional_categories_urls:
+            optional_categories.append(
+                {
+                    "term": optional_category_url,
+                    "scheme": available_categories[
+                        "optional"
+                    ][
+                        optional_category_url
+                    ][
+                        "scheme"
+                    ],
+                    "label": available_categories[
+                        "optional"
+                    ][
+                        optional_category_url
+                    ][
+                        "label"
+                    ],
+                }
+            )
+        optional_categories = tuple(optional_categories)
+
+        # Get all the metadata together
+        metadata = {
+            "abstract": self.get_record_abstract(),
+            "additional_rn": self.get_record_additional_report_numbers(),
+            "author": self.get_record_author(),
+            "comments": self.get_record_comments(),
+            "contributors": self.get_record_contributors(),
+            "doi": self.get_record_doi(),
+            "internal_notes": self.get_record_internal_notes(),
+            "journal_info": self.get_record_journal_info(),
+            "rn": self.get_record_report_number(),
+            "title": self.get_record_title(),
+            "modification_date": self.get_record_modification_date(),
+            "recid": self.get_recid(),
+            "mandatory_category": mandatory_category,
+            "optional_categories": optional_categories,
+        }
+
+        # Prepare the media
+        media = {}
+        files = self.get_record_files()
+        files_indexes = self.get_files_indexes()
+        for file_index in files_indexes:
+            media[file_index] = files[file_index]
+
+        # Perform the submission and save the result
+        self._result = self._server.submit(
+            metadata,
+            media,
+            url
+        )
+
+        # Return the result
+        return self._result
+
+    def get_result(self):
+        if '_result' not in self.__dict__.keys():
+            self._result = None
+        return self._result
+
+
+def perform_submit(
+        uid,
+        record_id,
+        server_id,
+        ln
+):
+    """
+    """
+
+    if record_id and record_exists(record_id):
+
+        # At this point we have a valid recid, go ahead and create the
+        # submission object.
+        submission = BibSwordSubmission(
+            record_id,
+            uid
+        )
+
+        # Gather useful information about the submission.
+        title = submission.get_record_title()
+        author = submission.get_record_author()[0]
+        report_number = submission.get_record_report_number()
+
+        # Get the submission ID.
+        sid = submission.get_sid()
+
+        # Store the submission.
+        stored_submission_successfully_p = _store_temp_submission(
+            sid,
+            submission
+        )
+
+        # Inform the user and administrators in case of problems and exit.
+        if not stored_submission_successfully_p:
+            msg = ("BibSword: Unable to store the submission in the DB " +
+                   "(sid={0}, uid={1}, record_id={2}, server_id={3}).").format(
+                sid,
+                uid,
+                record_id,
+                server_id
+            )
+            raise_exception(
+                msg=msg,
+                alert_admin=True
+            )
+            _ = gettext_set_language(ln)
+            out = _("An error has occured. " +
+                    "The administrators have been informed.")
+            return out
+
+        # Get the list of available servers.
+        servers = sword_client_db.get_servers()
+        # Only keep the server ID and name.
+        if servers:
+            servers = [server[:2] for server in servers]
+
+        # If the server_id has already been chosen,
+        # then move to the next step automatically.
+        step = 0
+        if server_id:
+            step = 1
+
+        # Create the basic starting interface for this submission.
+        out = sword_client_template.tmpl_submit(
+            sid,
+            record_id,
+            title,
+            author,
+            report_number,
+            step,
+            servers,
+            server_id,
+            ln
+        )
+
+        return out
+
     else:
-        medias = get_media_list(recid)
-
-    # get the uploaded media
-    if 'uploaded_media' in metadata:
-        if len(metadata['uploaded_media'])  > 30:
-            file_extention = ''
-            if metadata['type'] == 'application/zip':
-                file_extention = 'zip'
-            elif metadata['type'] == 'application/tar':
-                file_extention = 'tar'
-            elif metadata['type'] == 'application/docx':
-                file_extention = 'docx'
-            elif metadata['type'] == 'application/pdf':
-                file_extention = 'pdf'
-
-            file_path = '%s/uploaded_file_1.%s' % (CFG_TMPDIR, file_extention)
-
-            # save the file on the tmp directory
-            tmp_media = open(file_path, 'w')
-            tmp_media.write(metadata['uploaded_media'])
-
-            media = {'file': metadata['uploaded_media'] ,
-                     'size': str(len(metadata['uploaded_media'])),
-                     'type': metadata['type'],
-                     'path': file_path,
-                     'selected': 'checked="yes"',
-                     'loaded': True }
-            medias.append(media)
-
-    if metadata == {}:
-        # get metadata from marcxml
-        metadata = format_marcxml_file(marcxml)
+        # This means that no record_id was given, inform the user that a
+        # record_id is necessary for the submission to start.
+        _ = gettext_set_language(ln)
+        out = _("Unable to submit invalid record. " +
+                "Please submit a valid record and try again.")
+        return out
 
 
-    # format the html body string to containing category's dropdown list
-    bibsword_template = BibSwordTemplate()
-    body = bibsword_template.tmpl_display_metadata(user, remote_server,
-                                                   collection, primary,
-                                                   categories, medias,
-                                                   metadata, id_record,
-                                                   recid, error_messages)
+def perform_submit_step_1(
+    sid,
+    server_id,
+    ln
+):
+    """
+    """
+
+    _ = gettext_set_language(ln)
+
+    submission = _retrieve_temp_submission(sid)
+    if submission is None:
+        msg = ("BibSword: Unable to retrieve the submission from the DB " +
+               "(sid={0}, server_id={1}).").format(
+            sid,
+            server_id
+        )
+        raise_exception(
+            msg=msg,
+            alert_admin=True
+        )
+        _ = gettext_set_language(ln)
+        out = _("An error has occured. " +
+                "The administrators have been informed.")
+        return out
+
+    record_id = submission.get_recid()
+    is_submission_archived = sword_client_db.is_submission_archived(
+        record_id,
+        server_id
+    )
+    if is_submission_archived:
+        out = _("This record has already been submitted to this server." +
+                "<br />Please start again and select a different server.")
+        return out
+
+    server_settings = sword_client_db.get_servers(
+        server_id=server_id,
+        with_dict=True
+    )
+    if not server_settings:
+        msg = ("BibSword: Unable to find the server settings in the DB " +
+               "(sid={0}, server_id={1}).").format(
+            sid,
+            server_id
+        )
+        raise_exception(
+            msg=msg,
+            alert_admin=True
+        )
+        _ = gettext_set_language(ln)
+        out = _("An error has occured. " +
+                "The administrators have been informed.")
+        return out
+
+    server_settings = server_settings[0]
+    server_object = _initialize_server(server_settings)
+    if not server_object:
+        msg = ("BibSword: Unable to initialize the server " +
+               "(sid={0}, server_id={1}).").format(
+            sid,
+            server_id
+        )
+        raise_exception(
+            msg=msg,
+            alert_admin=True
+        )
+        _ = gettext_set_language(ln)
+        out = _("An error has occured. " +
+                "The administrators have been informed.")
+        return out
+
+    # Update the server's service document if needed.
+    if server_object.needs_to_be_updated():
+        server_object.update()
+
+    submission.set_server_id(server_id)
+    submission.set_server(server_object)
+
+    # Get the available collections
+    available_collections = submission.get_available_collections()
+
+    # Prepare the collections for the HTML select element
+    collections = sorted(
+        [
+            (
+                available_collection,
+                available_collections[available_collection]["title"]
+            ) for available_collection in available_collections
+        ],
+        key=lambda available_collection: available_collection[1]
+    )
+
+    # Update the stored submission.
+    updated_submission_successfully_p = _update_temp_submission(
+        sid,
+        submission
+    )
+    if not updated_submission_successfully_p:
+        msg = ("BibSword: Unable to update the submission in the DB " +
+               "(sid={0}, server_id={1}).").format(
+            sid,
+            server_id
+        )
+        raise_exception(
+            msg=msg,
+            alert_admin=True
+        )
+        _ = gettext_set_language(ln)
+        out = _("An error has occured. " +
+                "The administrators have been informed.")
+        return out
+
+    out = sword_client_template.submit_step_2_details(
+        collections,
+        ln
+    )
+
+    return out
 
 
-    return (body, errors, warnings)
+def perform_submit_step_2(
+    sid,
+    collection_url,
+    ln
+):
+    """
+    """
+
+    _ = gettext_set_language(ln)
+
+    submission = _retrieve_temp_submission(sid)
+    if submission is None:
+        msg = ("BibSword: Unable to retrieve the submission from the DB " +
+               "(sid={0}).").format(
+            sid
+        )
+        raise_exception(
+            msg=msg,
+            alert_admin=True
+        )
+        _ = gettext_set_language(ln)
+        out = _("An error has occured. " +
+                "The administrators have been informed.")
+        return out
+
+    submission.set_collection_url(collection_url)
+
+    # Get the available categories
+    available_categories = submission.get_available_categories()
+
+    # Prepare the categories for the HTML select element
+    mandatory_categories = sorted(
+        [
+            (
+                available_mandatory_category,
+                available_categories[
+                    "mandatory"
+                ][
+                    available_mandatory_category
+                ][
+                    "label"
+                ]
+            ) for available_mandatory_category in available_categories[
+                "mandatory"
+            ]
+        ],
+        key=lambda available_mandatory_category: available_mandatory_category[
+            1
+        ]
+    )
+    optional_categories = sorted(
+        [
+            (
+                available_optional_category,
+                available_categories[
+                    "optional"
+                ][
+                    available_optional_category
+                ][
+                    "label"
+                ]
+            ) for available_optional_category in available_categories[
+                "optional"
+            ]
+        ],
+        key=lambda available_optional_category: available_optional_category[
+            1
+        ]
+    )
+
+    # Update the stored submission.
+    updated_submission_successfully_p = _update_temp_submission(
+        sid,
+        submission
+    )
+    if not updated_submission_successfully_p:
+        msg = ("BibSword: Unable to update the submission in the DB " +
+               "(sid={0}).").format(
+            sid
+        )
+        raise_exception(
+            msg=msg,
+            alert_admin=True
+        )
+        _ = gettext_set_language(ln)
+        out = _("An error has occured. " +
+                "The administrators have been informed.")
+        return out
+
+    out = sword_client_template.submit_step_3_details(
+        mandatory_categories,
+        optional_categories,
+        ln
+    )
+
+    return out
 
 
-def perform_submit_record(user, id_server, id_collection, id_primary,
-                          id_categories, recid, metadata=None):
-    '''
-        Get the given informations and submit them to the SWORD remote server
-        Display the result of the submission or an error message if something
-        went wrong.
-        @param user: informations about the submitter
-        @param id_server: id of the remote server selected by the user
-        @param id_collection: id of the collection selected by the user
-        @param id_primary: primary collection selected by the user
-        @param recid: record id corresponding to the selected record
-        @param metadata: contains all the metadata to submit
-        @return: string containing the generated html code
-    '''
+def perform_submit_step_3(
+    sid,
+    mandatory_category_url,
+    optional_categories_urls,
+    ln
+):
+    """
+    """
 
-    if metadata == None:
-        metadata = {}
+    _ = gettext_set_language(ln)
 
-    #declare return values
-    body = ''
-    errors = []
-    warnings = []
+    submission = _retrieve_temp_submission(sid)
+    if submission is None:
+        msg = ("BibSword: Unable to retrieve the submission from the DB " +
+               "(sid={0}).").format(
+            sid
+        )
+        raise_exception(
+            msg=msg,
+            alert_admin=True
+        )
+        _ = gettext_set_language(ln)
+        out = _("An error has occured. " +
+                "The administrators have been informed.")
+        return out
 
-    # get the collection's name and link
-    collections = list_collections_from_server(id_server)
-    collection = {}
-    for item in collections:
-        if item['id'] == id_collection:
-            collection = item
+    submission.set_mandatory_category_url(mandatory_category_url)
+    if optional_categories_urls:
+        submission.set_optional_categories_urls(optional_categories_urls)
 
-    # get primary category name and host
-    primary_categories = list_mandated_categories(id_server, id_collection)
-    primary = {}
-    for category in primary_categories:
-        if category['id'] == id_primary:
-            primary = category
-            metadata['primary_label'] = primary['label']
-            metadata['primary_url'] = primary['url']
-            break
+    metadata = {
+        'title': submission.get_record_title(),
+        'abstract': submission.get_record_abstract(),
+        'author': submission.get_record_author(),
+        'contributors': submission.get_record_contributors(),
+        'rn': submission.get_record_report_number(),
+        'additional_rn': submission.get_record_additional_report_numbers(),
+        'doi': submission.get_record_doi(),
+        'comments': submission.get_record_comments(),
+        'internal_notes': submission.get_record_internal_notes(),
+        'journal_info': submission.get_record_journal_info(),
+    }
 
-    # get the secondary categories name and host
-    categories = []
-    if len(id_categories) > 0:
-        # get optional categories name and host
-        optional_categories = list_optional_categories(id_server, id_collection)
-        for item in optional_categories:
-            category = {}
-            for id_category in id_categories:
-                if item['id'] == id_category:
-                    category = item
-                    categories.append(category)
+    files = submission.get_record_files()
 
-    metadata['categories'] = categories
+    # Update the stored submission.
+    updated_submission_successfully_p = _update_temp_submission(
+        sid,
+        submission
+    )
+    if not updated_submission_successfully_p:
+        msg = ("BibSword: Unable to update the submission in the DB " +
+               "(sid={0}).").format(
+            sid
+        )
+        raise_exception(
+            msg=msg,
+            alert_admin=True
+        )
+        _ = gettext_set_language(ln)
+        out = _("An error has occured. " +
+                "The administrators have been informed.")
+        return out
 
-    # get the marcxml file
-    marcxml = get_marcxml_from_record(recid)
+    out = sword_client_template.submit_step_4_details(
+        metadata,
+        files,
+        CFG_BIBSWORD_MAXIMUM_NUMBER_OF_CONTRIBUTORS,
+        ln
+    )
 
-    user_info = {'id':user['uid'],
-                 'nickname':user['nickname'],
-                 'email':user['email']}
+    return out
 
-    result = perform_submission_process(id_server, collection['url'], recid,
-                                        user_info, metadata, metadata['media'],
-                                        marcxml)
 
-    body = result
+def perform_submit_step_4(
+    sid,
+    (
+        rn,
+        additional_rn,
+        title,
+        author_fullname,
+        author_email,
+        author_affiliation,
+        abstract,
+        contributor_fullname,
+        contributor_email,
+        contributor_affiliation,
+        files_indexes
+    ),
+    ln
+):
+    """
+    """
 
-    if result['error'] != '':
-        body = '<h2>'+result['error']+'</h2>'
+    _ = gettext_set_language(ln)
+
+    submission = _retrieve_temp_submission(sid)
+    if submission is None:
+        msg = ("BibSword: Unable to retrieve the submission from the DB " +
+               "(sid={0}).").format(
+            sid
+        )
+        raise_exception(
+            msg=msg,
+            alert_admin=True
+        )
+        _ = gettext_set_language(ln)
+        out = _("An error has occured. " +
+                "The administrators have been informed.")
+        return out
+
+    # Set the updated metadata
+    submission.set_record_title(title)
+    submission.set_record_abstract(abstract)
+    submission.set_record_author(
+        (author_fullname, author_email, author_affiliation)
+    )
+    submission.set_record_contributors(
+        (contributor_fullname, contributor_email, contributor_affiliation)
+    )
+    submission.set_record_report_number(rn)
+    submission.set_record_additional_report_numbers(additional_rn)
+    # submission.set_record_doi(doi)
+    # submission.set_record_comments(comments)
+    # submission.set_record_internal_notes(internal_notes)
+    # submission.set_record_journal_info(
+    #     (journal_code, journal_title, journal_page, journal_year)
+    # )
+
+    # Set the chosen files indexes
+    submission.set_files_indexes(files_indexes)
+
+    # Perform the submission
+    result = submission.submit()
+
+    if result is None or not result or result.get('error', False):
+        # Update the stored submission
+        updated_submission_successfully_p = _update_temp_submission(
+            sid,
+            submission
+        )
+
+        if not updated_submission_successfully_p:
+            msg = ("BibSword: Unable to update the submission in the DB " +
+                   "(sid={0}).").format(
+                sid
+            )
+            raise_exception(
+                msg=msg,
+                alert_admin=True
+            )
+            _ = gettext_set_language(ln)
+            out = _("An error has occured. " +
+                    "The administrators have been informed.")
+            return out
+
+        # TODO: Should we give the user detailed feedback on the error
+        #       in the result (if it exsists?), instead of just notifying
+        #        the admins?
+        msg = ("BibSword: The submission failed " +
+               "(sid={0}, result={1}).").format(
+            sid,
+            str(result)
+        )
+        raise_exception(
+            msg=msg,
+            alert_admin=True
+        )
+
+        _ = gettext_set_language(ln)
+        if result.get("error", False):
+            out = _("The submission could not be completed successfully " +
+                    "and the following error has been reported:" +
+                    "<br /><em>{0}</em><br />" +
+                    "The administrators have been informed.").format(
+                        result.get("msg", _("Uknown error."))
+                        )
+        else:
+            out = _("An error has occured. " +
+                    "The administrators have been informed.")
+        return out
 
     else:
-        submissions = select_submitted_record_infos(0, 1, result['row_id'])
-        if metadata['filename'] != '':
-            upload_fulltext(recid, metadata['filename'])
+        # Archive the submission
+        archived_submission_successfully_p = _archive_submission(submission)
+        if not archived_submission_successfully_p:
+            msg = ("BibSword: Unable to archive the submission in the DB " +
+                   "(sid={0}).").format(
+                sid
+            )
+            raise_exception(
+                msg=msg,
+                alert_admin=True
+            )
+            _ = gettext_set_language(ln)
+            out = _("An error has occured. " +
+                    "The administrators have been informed.")
+            return out
 
-        bibsword_template = BibSwordTemplate()
-        body = bibsword_template.tmpl_display_list_submission(submissions)
+        # Delete the previously temporary submission
+        deleted_submission_successfully_p = _delete_temp_submission(sid)
+        if not deleted_submission_successfully_p:
+            msg = ("BibSword: Unable to delete the submission in the DB " +
+                   "(sid={0}).").format(
+                sid
+            )
+            raise_exception(
+                msg=msg,
+                alert_admin=True
+            )
+            _ = gettext_set_language(ln)
+            out = _("An error has occured. " +
+                    "The administrators have been informed.")
+            return out
 
-    return (body, errors, warnings)
+    out = sword_client_template.submit_step_final_details(ln)
+
+    return out
+
+
+def _archive_submission(sobject):
+    """
+    Archives the current submission.
+    """
+
+    user_id = sobject.get_uid()
+    record_id = sobject.get_recid()
+    server_id = sobject.get_server_id()
+    result = sobject.get_result()
+    alternate_url = result['msg']['alternate']
+    edit_url = result['msg']['edit']
+    return sword_client_db.archive_submission(
+        user_id,
+        record_id,
+        server_id,
+        alternate_url,
+        edit_url
+    )
+
+
+def _store_temp_submission(sid, sobject):
+    """
+    Uses cPickle to dump the current submission and stores it.
+    """
+
+    sobject_blob = cPickle.dumps(sobject)
+    return sword_client_db.store_temp_submission(sid, sobject_blob)
+
+
+def _retrieve_temp_submission(sid):
+    """
+    Retrieves the current submission and uses cPickle to load it.
+    """
+
+    # call DB function to retrieve the blob
+    sobject_blob = sword_client_db.retrieve_temp_submission(sid)
+    sobject = cPickle.loads(sobject_blob)
+    return sobject
+
+
+def _update_temp_submission(sid, sobject):
+    """
+    Uses cPickle to dump the current submission and updates it.
+    """
+
+    sobject_blob = cPickle.dumps(sobject)
+    return sword_client_db.update_temp_submission(sid, sobject_blob)
+
+
+def _delete_temp_submission(sid):
+    """
+    Deletes the given submission.
+    """
+
+    return sword_client_db.delete_temp_submission(sid)
+
+
+def _decapitalize(field_parts):
+    return tuple([part.lower() for part in field_parts])
+
+
+def perform_request_submissions(
+    ln
+):
+    """
+    Returns the HTML for the Sword client submissions.
+    """
+
+    submissions = sword_client_db.get_submissions()
+
+    html = sword_client_template.tmpl_submissions(
+        submissions,
+        ln
+    )
+
+    return html
+
+
+def perform_request_submission_options(
+    option,
+    action,
+    server_id,
+    status_url,
+    ln
+):
+    """
+    Perform an action on a given submission based on the selected option
+    and return the results.
+    """
+
+    _ = gettext_set_language(ln)
+
+    (error, result) = (None, None)
+
+    if not option:
+        error = _("Missing option")
+
+    elif not action:
+        error = _("Missing action")
+
+    else:
+
+        if option == "update":
+
+            if not server_id:
+                error = _("Missing server ID")
+
+            if not status_url:
+                error = _("Missing status URL")
+
+            else:
+                if action == "submit":
+                    server_settings = sword_client_db.get_servers(
+                        server_id=server_id,
+                        with_dict=True
+                    )
+                    if not server_settings:
+                        error = _("The server could not be found")
+                    else:
+                        server_settings = server_settings[0]
+                        server_object = _initialize_server(server_settings)
+                        if not server_object:
+                            error = _("The server could not be initialized")
+                        else:
+                            result = server_object.status(status_url)
+                            if result["error"]:
+                                error = _(result["msg"])
+                            else:
+                                result = {
+                                    "status": (
+                                        result["msg"]["error"] is None
+                                    ) and (
+                                        "{0}".format(result["msg"]["status"])
+                                    ) or (
+                                        "{0} ({1})".format(
+                                            result["msg"]["status"],
+                                            result["msg"]["error"]
+                                        )
+                                    ),
+                                    "last_updated": _("Just now"),
+                                }
+                                result = json.dumps(result)
+                else:
+                    error = _("Wrong action")
+
+        else:
+            error = _("Wrong option")
+
+    return (error, result)
+
+
+def perform_request_servers(
+    ln
+):
+    """
+    Returns the HTML for the Sword client servers.
+    """
+
+    servers = sword_client_db.get_servers()
+
+    html = sword_client_template.tmpl_servers(
+        servers,
+        ln
+    )
+
+    return html
+
+
+def perform_request_server_options(
+    option,
+    action,
+    server_id,
+    server,
+    ln
+):
+    """
+    Perform an action on a given server based on the selected option
+    and return the results.
+    """
+
+    _ = gettext_set_language(ln)
+
+    (error, result) = (None, None)
+
+    if not option:
+        error = _("Missing option")
+
+    elif not action:
+        error = _("Missing action")
+
+    else:
+
+        if option == "add":
+            if action == "prepare":
+                server = None
+                available_engines = _CLIENT_SERVERS.keys()
+                if "__init__" in available_engines:
+                    available_engines.remove("__init__")
+                result = sword_client_template.tmpl_add_or_modify_server(
+                    server,
+                    available_engines,
+                    ln
+                )
+            elif action == "submit":
+                if "" in server:
+                    error = _("Insufficient server information")
+                else:
+                    if not _validate_server(server):
+                        error = _("Wrong server information")
+                    else:
+                        server_id = sword_client_db.add_server(*server)
+                        if server_id:
+                            (
+                                name,
+                                engine,
+                                username,
+                                password,
+                                email,
+                                update_frequency
+                            ) = server
+                            result = \
+                                sword_client_template._tmpl_server_table_row(
+                                    (
+                                        server_id,
+                                        name,
+                                        engine,
+                                        username,
+                                        password,
+                                        email,
+                                        None,
+                                        update_frequency,
+                                        None,
+                                    ),
+                                    ln
+                                )
+                        else:
+                            error = _("The server could not be added")
+            else:
+                error = _("Wrong action")
+
+        elif option == "update":
+
+            if not server_id:
+                error = _("Missing server ID")
+
+            else:
+                if action == "submit":
+                    server_settings = sword_client_db.get_servers(
+                        server_id=server_id,
+                        with_dict=True
+                    )
+                    if not server_settings:
+                        error = _("The server could not be found")
+                    else:
+                        server_settings = server_settings[0]
+                        server_object = _initialize_server(server_settings)
+                        if not server_object:
+                            error = _("The server could not be initialized")
+                        else:
+                            result = server_object.update()
+                            if not result:
+                                error = _("The server could not be updated")
+                            else:
+                                result = _("Just now")
+                else:
+                    error = _("Wrong action")
+
+        elif option == "modify":
+            if not server_id:
+                error = _("Missing server ID")
+
+            else:
+                if action == "prepare":
+                    server = sword_client_db.get_servers(
+                        server_id=server_id
+                    )
+                    if not server:
+                        error = _("The server could not be found")
+                    else:
+                        server = server[0]
+                        available_engines = _CLIENT_SERVERS.keys()
+                        if "__init__" in available_engines:
+                            available_engines.remove("__init__")
+                        result = \
+                            sword_client_template.tmpl_add_or_modify_server(
+                                server,
+                                available_engines,
+                                ln
+                            )
+                elif action == "submit":
+                    if "" in server:
+                        error = _("Insufficient server information")
+                    else:
+                        if not _validate_server(server):
+                            error = _("Wrong server information")
+                        else:
+                            result = sword_client_db.modify_server(
+                                server_id,
+                                *server
+                            )
+                            if result:
+                                (
+                                    name,
+                                    engine,
+                                    username,
+                                    dummy,
+                                    email,
+                                    update_frequency
+                                ) = server
+                                result = {
+                                    "name": name,
+                                    "engine": engine,
+                                    "username": username,
+                                    "email": email,
+                                    "update_frequency": TemplateSwordClient
+                                    ._humanize_frequency(update_frequency, ln),
+                                }
+                                result = json.dumps(result)
+                            else:
+                                error = _("The server could not be modified")
+                else:
+                    error = _("Wrong action")
+
+        elif option == "delete":
+            if not server_id:
+                error = _("Missing server ID")
+
+            else:
+                if action == "submit":
+                    result = sword_client_db.delete_servers(
+                        server_id=server_id
+                    )
+                    if not result:
+                        error = _("The server could not be deleted")
+                else:
+                    error = _("Wrong action")
+
+        else:
+            error = _("Wrong option")
+
+    return (error, result)
+
+
+def _initialize_server(server_settings):
+    """
+    Initializes and returns the server based on the given settings.
+    """
+
+    server_engine = server_settings.pop('engine')
+    if server_engine is not None:
+        server_object = _CLIENT_SERVERS.get(server_engine)(server_settings)
+        return server_object
+    return None
+
+
+def _validate_server(server_settings):
+    """
+    Returs True if the server settings are valid or False if otherwise.
+    """
+
+    (server_name,
+     server_engine,
+     server_username,
+     server_password,
+     server_email,
+     server_update_frequency) = server_settings
+
+    available_engines = _CLIENT_SERVERS.keys()
+    if "__init__" in available_engines:
+        available_engines.remove("__init__")
+    if server_engine not in available_engines:
+        return False
+
+    if not re.match(
+        r"^([0-9]+[wdhms]{1}){1,5}$",
+        server_update_frequency
+    ):
+        return False
+
+    return True
