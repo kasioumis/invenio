@@ -601,6 +601,7 @@ Contents
              CFG_SITE_SECURE_URL = https://your.site.com
              CFG_SITE_ADMIN_EMAIL = john.doe@your.site.com
              CFG_SITE_SUPPORT_EMAIL = john.doe@your.site.com
+             CFG_SITE_MONITORING_EMAIL = john.doe@your.site.com
              CFG_WEBALERT_ALERT_ENGINE_EMAIL = john.doe@your.site.com
              CFG_WEBCOMMENT_ALERT_ENGINE_EMAIL = john.doe@your.site.com
              CFG_WEBCOMMENT_DEFAULT_MODERATOR = john.doe@your.site.com
