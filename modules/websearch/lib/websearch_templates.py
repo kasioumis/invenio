@@ -65,6 +65,11 @@ from invenio.config import \
      CFG_SITE_RECORD, \
      CFG_WEBSEARCH_PREV_NEXT_HIT_LIMIT
 
+try:
+    from invenio.config import CFG_WEBSEARCH_AUTOFOCUS_SEARCH_BOX
+except ImportError:
+    CFG_WEBSEARCH_AUTOFOCUS_SEARCH_BOX = False
+
 from invenio.dbquery import run_sql
 from invenio.messages import gettext_set_language
 from invenio.urlutils import make_canonical_urlargd, drop_default_urlargd, create_html_link, create_url
@@ -859,12 +864,29 @@ class Template:
         for field, value in argd.items():
             out += self.tmpl_input_hidden(field, value)
 
-
         header = _("Search %s records for:") % \
                  self.tmpl_nbrecs_info(record_count, "", "")
+
         asearchurl = self.build_search_interface_url(c=collection_id,
                                                      aas=max(CFG_WEBSEARCH_ENABLED_SEARCH_INTERFACES),
                                                      ln=ln)
+
+        if CFG_WEBSEARCH_AUTOFOCUS_SEARCH_BOX:
+            search_input_element = """
+            <script type="text/javascript">
+            if ( /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent) ) {
+                document.write('<input type="text" name="p" size="%(sizepattern)d" value="" class="simplesearchfield"/>')
+            }
+            else {
+                document.write('<input type="text" name="p" size="%(sizepattern)d" value="" class="simplesearchfield" tabindex="1" autofocus="autofocus" />')
+            }
+            </script>""" % {
+                'sizepattern' : CFG_WEBSEARCH_SIMPLESEARCH_PATTERN_BOX_WIDTH,}
+        else:
+            search_input_element = """
+            <input type="text" name="p" size="%(sizepattern)d" value="" class="simplesearchfield"/>""" % {
+                'sizepattern' : CFG_WEBSEARCH_SIMPLESEARCH_PATTERN_BOX_WIDTH,}
+
         # print commentary start:
         out += '''
         <table class="searchbox simplesearch">
@@ -875,7 +897,9 @@ class Template:
          </thead>
          <tbody>
           <tr valign="baseline">
-           <td class="searchboxbody" align="left"><input type="text" name="p" size="%(sizepattern)d" value="" class="simplesearchfield"/></td>
+           <td class="searchboxbody" align="left">
+            %(search_input_element)s
+           </td>
            <td class="searchboxbody" align="left">%(middle_option)s</td>
            <td class="searchboxbody" align="left">
              <input class="formbutton" type="submit" name="action_search" value="%(msg_search)s" />
@@ -893,11 +917,11 @@ class Template:
         </table>
         <!--/create_searchfor_simple()-->
         ''' % {'ln' : ln,
-               'sizepattern' : CFG_WEBSEARCH_SIMPLESEARCH_PATTERN_BOX_WIDTH,
                'langlink': '?ln=' + ln,
                'siteurl' : CFG_SITE_URL,
                'asearch' : create_html_link(asearchurl, {}, _('Advanced Search')),
                'header' : header,
+               'search_input_element' : search_input_element,
                'middle_option' : middle_option,
                'msg_search' : _('Search'),
                'msg_browse' : _('Browse'),
@@ -2105,7 +2129,9 @@ class Template:
              </thead>
              <tbody>
               <tr valign="top">
-                <td class="searchboxbody"><input type="text" name="p" size="%(sizepattern)d" value="%(p)s" class="simplesearchfield"/></td>
+                <td class="searchboxbody">
+                  <input type="text" name="p" size="%(sizepattern)d" value="%(p)s" class="simplesearchfield"/>
+                </td>
                 <td class="searchboxbody">%(searchwithin)s</td>
                 <td class="searchboxbody">
                   <input class="formbutton" type="submit" name="action_search" value="%(search)s" />
